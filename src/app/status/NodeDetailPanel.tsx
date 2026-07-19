@@ -9,11 +9,20 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
 import type { GraphSnapshot, RenderNode } from "../../graph/graph-types";
 import { placeAnchoredTooltip } from "../controls/tooltip-placement";
+
+type ScrollThumb = {
+  top: number;
+  height: number;
+};
+
+/** Inset so the thumb doesn’t kiss the panel’s top/bottom edges. */
+const SCROLL_THUMB_INSET_PX = 6;
 
 export type NodeNeighbor = {
   id: string;
@@ -34,8 +43,6 @@ export type NodeDetail = {
   neighbors: NodeNeighbor[];
 };
 
-const MAX_NEIGHBORS = 8;
-
 const TOOLTIPS = {
   heard: "How often this word has surfaced in the conversation so far.",
   links: "How many other words this one reaches across the field.",
@@ -45,7 +52,7 @@ const TOOLTIPS = {
   semantic: "Drawn together by meaning — ideas that belong with each other.",
   proximity:
     "Drawn together by place in the transcript — words that sit near each other as you speak.",
-  connected: "Nearby companions in the field. Tap one to step into it.",
+  connected: "Every word this one reaches. Tap one to step into it.",
 } as const;
 
 type TipState = {
@@ -194,7 +201,7 @@ export function buildNodeDetail(
   }
 
   const neighbors: NodeNeighbor[] = [];
-  for (const edge of snapshot.edges) {
+  for (const edge of snapshot.graphEdges) {
     let otherId: string | null = null;
     if (edge.sourceId === nodeId) {
       otherId = edge.targetId;
@@ -227,7 +234,7 @@ export function buildNodeDetail(
     communitySize: node.communitySize,
     semanticRatio: node.semanticRatio,
     activation: node.activation,
-    neighbors: neighbors.slice(0, MAX_NEIGHBORS),
+    neighbors,
   };
 }
 
@@ -241,7 +248,10 @@ export function NodeDetailPanel({
   onSelectNeighbor: (nodeId: string) => void;
 }) {
   const [tip, setTip] = useState<TipState | null>(null);
+  const [panelHovered, setPanelHovered] = useState(false);
+  const [scrollThumb, setScrollThumb] = useState<ScrollThumb | null>(null);
   const tipRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const show = useCallback((text: string, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
@@ -257,6 +267,28 @@ export function NodeDetailPanel({
     setTip(null);
   }, []);
 
+  const syncScrollThumb = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) {
+      setScrollThumb(null);
+      return;
+    }
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    if (scrollHeight <= clientHeight + 1) {
+      setScrollThumb(null);
+      return;
+    }
+    const track = Math.max(0, clientHeight - SCROLL_THUMB_INSET_PX * 2);
+    const height = Math.max(28, (clientHeight / scrollHeight) * track);
+    const maxTop = track - height;
+    const top =
+      SCROLL_THUMB_INSET_PX +
+      (maxTop <= 0
+        ? 0
+        : (scrollTop / (scrollHeight - clientHeight)) * maxTop);
+    setScrollThumb({ top, height });
+  }, []);
+
   useLayoutEffect(() => {
     const el = tipRef.current;
     if (!tip || !el) {
@@ -267,84 +299,146 @@ export function NodeDetailPanel({
     el.dataset.ready = "true";
   }, [tip]);
 
+  // Jump back to the top when stepping into a different word.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = 0;
+    hide();
+    syncScrollThumb();
+  }, [detail.id, hide, syncScrollThumb]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    syncScrollThumb();
+    const ro = new ResizeObserver(() => {
+      syncScrollThumb();
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, [detail.neighbors.length, syncScrollThumb]);
+
   const tipApi = useMemo(() => ({ show, hide }), [show, hide]);
+
+  const thumbStyle = useMemo((): CSSProperties | undefined => {
+    if (!scrollThumb) {
+      return undefined;
+    }
+    return {
+      transform: `translateY(${scrollThumb.top}px)`,
+      height: scrollThumb.height,
+    };
+  }, [scrollThumb]);
 
   return (
     <TipContext.Provider value={tipApi}>
       <aside
-        className="node-detail-panel"
+        className={[
+          "node-detail-panel",
+          panelHovered ? "is-hovered" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
         aria-label={`Details for ${detail.label}`}
-        onPointerLeave={hide}
+        onPointerEnter={() => {
+          setPanelHovered(true);
+        }}
+        onPointerLeave={() => {
+          setPanelHovered(false);
+          hide();
+        }}
       >
-        <header className="node-detail-header">
-          <h2 className="node-detail-title">{detail.label}</h2>
-          <button
-            type="button"
-            className="node-detail-close"
-            onClick={onClose}
-            aria-label="Close details"
-          >
-            ×
-          </button>
-        </header>
+        <div
+          ref={scrollRef}
+          className="node-detail-panel-scroll"
+          onScroll={syncScrollThumb}
+        >
+          <header className="node-detail-header">
+            <h2 className="node-detail-title">{detail.label}</h2>
+            <button
+              type="button"
+              className="node-detail-close"
+              onClick={onClose}
+              aria-label="Close details"
+            >
+              ×
+            </button>
+          </header>
 
-        <dl className="node-detail-stats">
-          <div className="node-detail-stat">
-            <Tip text={TOOLTIPS.heard}>
-              <dt className="node-detail-tip-label">Heard</dt>
-            </Tip>
-            <dd>{detail.occurrenceCount}×</dd>
-          </div>
-          <div className="node-detail-stat">
-            <Tip text={TOOLTIPS.links}>
-              <dt className="node-detail-tip-label">Links</dt>
-            </Tip>
-            <dd>{detail.degree}</dd>
-          </div>
-          <div className="node-detail-stat">
-            <Tip text={TOOLTIPS.cluster}>
-              <dt className="node-detail-tip-label">Cluster</dt>
-            </Tip>
-            <dd>{detail.communitySize} words</dd>
-          </div>
-        </dl>
-
-        <div className="node-detail-affinity-block">
-          <Tip text={TOOLTIPS.affinity}>
-            <span className="node-detail-affinity-label node-detail-tip-label">
-              Affinity
-            </span>
-          </Tip>
-          <AffinityBar semanticRatio={detail.semanticRatio} />
-        </div>
-
-        {detail.neighbors.length > 0 ? (
-          <section className="node-detail-neighbors">
-            <Tip text={TOOLTIPS.connected}>
-              <h3 className="node-detail-tip-label">Connected</h3>
-            </Tip>
-            <div className="node-detail-tags">
-              {detail.neighbors.map((neighbor) => {
-                const percent = affinityPercent(neighbor.weight);
-                return (
-                  <button
-                    key={neighbor.id}
-                    type="button"
-                    className="node-detail-tag"
-                    onClick={() => onSelectNeighbor(neighbor.id)}
-                  >
-                    <span className="node-detail-tag-label">
-                      {neighbor.label}
-                    </span>
-                    <span className="node-detail-tag-percent">{percent}%</span>
-                  </button>
-                );
-              })}
+          <dl className="node-detail-stats">
+            <div className="node-detail-stat">
+              <Tip text={TOOLTIPS.heard}>
+                <dt className="node-detail-tip-label">Heard</dt>
+              </Tip>
+              <dd>{detail.occurrenceCount}×</dd>
             </div>
-          </section>
-        ) : (
-          <p className="node-detail-empty">No visible connections yet.</p>
-        )}
+            <div className="node-detail-stat">
+              <Tip text={TOOLTIPS.links}>
+                <dt className="node-detail-tip-label">Links</dt>
+              </Tip>
+              <dd>{detail.degree}</dd>
+            </div>
+            <div className="node-detail-stat">
+              <Tip text={TOOLTIPS.cluster}>
+                <dt className="node-detail-tip-label">Cluster</dt>
+              </Tip>
+              <dd>{detail.communitySize} words</dd>
+            </div>
+          </dl>
+
+          <div className="node-detail-affinity-block">
+            <Tip text={TOOLTIPS.affinity}>
+              <span className="node-detail-affinity-label node-detail-tip-label">
+                Affinity
+              </span>
+            </Tip>
+            <AffinityBar semanticRatio={detail.semanticRatio} />
+          </div>
+
+          {detail.neighbors.length > 0 ? (
+            <section className="node-detail-neighbors">
+              <Tip text={TOOLTIPS.connected}>
+                <h3 className="node-detail-tip-label">Connected</h3>
+              </Tip>
+              <div className="node-detail-tags">
+                {detail.neighbors.map((neighbor) => {
+                  const percent = affinityPercent(neighbor.weight);
+                  return (
+                    <button
+                      key={neighbor.id}
+                      type="button"
+                      className="node-detail-tag"
+                      onClick={() => onSelectNeighbor(neighbor.id)}
+                    >
+                      <span className="node-detail-tag-label">
+                        {neighbor.label}
+                      </span>
+                      <span className="node-detail-tag-percent">
+                        {percent}%
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : (
+            <p className="node-detail-empty">No connections yet.</p>
+          )}
+        </div>
+        {scrollThumb ? (
+          <div
+            className="node-detail-scrollbar"
+            aria-hidden
+            style={thumbStyle}
+          />
+        ) : null}
       </aside>
 
       {tip

@@ -5,14 +5,7 @@ import {
   type MutableRefObject,
 } from "react";
 
-export type NodeCursorTarget = {
-  id: string;
-  x: number;
-  y: number;
-  radius: number;
-};
-
-/** Outline box for keyboard / tour focus lock (screen coordinates). */
+/** Outline box for keyboard focus lock (screen coordinates). */
 export type FocusLockTarget = {
   x: number;
   y: number;
@@ -24,26 +17,21 @@ export type FocusLockTarget = {
 };
 
 type CustomCursorProps = {
-  queryNodeTarget: (
-    clientX: number,
-    clientY: number,
-  ) => NodeCursorTarget | null;
   /**
-   * Optional keyboard/tour focus lock. While this returns a target, the cursor
+   * Optional keyboard focus lock. While this returns a target, the cursor
    * outlines that box even if the pointer is elsewhere (or the DOM node is
    * briefly unmounted by virtualization).
    */
   getFocusLockTarget?: () => FocusLockTarget | null;
   /**
-   * When true, force-hide the cursor. Cleared on the next pointermove
-   * (idle tour, etc.).
+   * When true, force-hide the cursor. Cleared on the next pointermove.
    */
   suppressedRef?: MutableRefObject<boolean>;
   /** Fired once when a suppressed cursor is revealed by pointer movement. */
   onSuppressedReveal?: () => void;
 };
 
-type CursorMode = "default" | "button" | "node" | "help" | "hidden";
+type CursorMode = "default" | "button" | "help" | "hidden";
 
 type VisualState = {
   x: number;
@@ -59,7 +47,6 @@ const DEFAULT_RADIUS = DEFAULT_RING / 2;
 const BUTTON_PAD = 9;
 /** Extra slack past the button edge before the sticky outline lets go. */
 const BUTTON_STICK_PAD = 18;
-const NODE_PAD = 10;
 /** Inner dot tracks the pointer tightly. */
 const LERP_DOT = 34;
 /** Outer ring trails behind (higher = snappier). */
@@ -92,14 +79,42 @@ function isTextEditingTarget(el: Element | null): boolean {
   );
 }
 
+function findScrubThumb(el: Element | null): HTMLElement | null {
+  if (!el) {
+    return null;
+  }
+  const scrub =
+    el instanceof HTMLElement && el.classList.contains("transcript-scrub")
+      ? el
+      : el.closest(".transcript-scrub");
+  if (!(scrub instanceof HTMLElement)) {
+    return null;
+  }
+  const thumb = scrub.querySelector(".transcript-scrub-thumb");
+  return thumb instanceof HTMLElement ? thumb : scrub;
+}
+
 function findButtonTarget(el: Element | null): HTMLElement | null {
   if (!el) {
     return null;
+  }
+  // Scrub hit target is the full track; wrap the thumb circle.
+  const scrubThumb = findScrubThumb(el);
+  if (scrubThumb) {
+    return scrubThumb;
   }
   const hit = el.closest(
     'button:not(:disabled), [role="button"]:not([aria-disabled="true"]), a[href], .transcript-word.is-interactive, .transcript-word.is-revealing, .node-detail-tag',
   );
   return hit instanceof HTMLElement ? hit : null;
+}
+
+function isScrubThumbTarget(el: HTMLElement): boolean {
+  return (
+    el.classList.contains("transcript-scrub-thumb") ||
+    el.classList.contains("transcript-scrub") ||
+    !!el.closest(".transcript-scrub")
+  );
 }
 
 function findHelpTarget(el: Element | null): HTMLElement | null {
@@ -149,12 +164,15 @@ function buttonTargetState(button: HTMLElement): VisualState {
   const rect = button.getBoundingClientRect();
   const style = getComputedStyle(button);
   const corner = parseCornerRadius(style, rect.width, rect.height);
+  // Pill radii like 999px paint as circles, but must clamp here or the ring
+  // lerps from a huge value and the corners look wrong until it catches up.
+  const maxCorner = Math.min(rect.width, rect.height) / 2;
   return {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
     width: rect.width + BUTTON_PAD * 2,
     height: rect.height + BUTTON_PAD * 2,
-    radius: corner + BUTTON_PAD,
+    radius: Math.min(corner, maxCorner) + BUTTON_PAD,
   };
 }
 
@@ -163,7 +181,6 @@ function easeToward(current: number, target: number, rate: number, dt: number) {
 }
 
 export function CustomCursor({
-  queryNodeTarget,
   getFocusLockTarget,
   suppressedRef,
   onSuppressedReveal,
@@ -181,6 +198,8 @@ export function CustomCursor({
 
   const pointerRef = useRef({ x: 0, y: 0, inside: false, pressed: false });
   const modeRef = useRef<CursorMode>("hidden");
+  /** True while hovering/dragging the scrub (drives the ↔ chevron). */
+  const scrubbingRef = useRef(false);
   const stickyButtonRef = useRef<HTMLElement | null>(null);
   const targetRef = useRef<VisualState>({
     x: 0,
@@ -205,6 +224,8 @@ export function CustomCursor({
   const focusLockKeyRef = useRef<string | number | null>(null);
 
   const resolveTarget = useEffectEvent((clientX: number, clientY: number) => {
+    scrubbingRef.current = false;
+
     if (!enabledRef.current) {
       modeRef.current = "hidden";
       stickyButtonRef.current = null;
@@ -219,8 +240,23 @@ export function CustomCursor({
       return;
     }
 
-    // Keyboard / tour focus lock — move the cursor onto that word even if the
-    // pointer is elsewhere. Cleared by the provider on real pointer movement.
+    // Active scrub drag — exclusive. Don't wrap words/buttons under the pointer
+    // (scrub pointerdown stopPropagation also hides the window "pressed" bit).
+    const activeScrub = document.querySelector(".transcript-scrub.is-active");
+    const scrubThumb = findScrubThumb(activeScrub);
+    if (scrubThumb) {
+      stickyButtonRef.current = scrubThumb;
+      scrubbingRef.current = true;
+      modeRef.current = "button";
+      targetRef.current = buttonTargetState(scrubThumb);
+      return;
+    }
+
+    const el = pointerRef.current.inside
+      ? document.elementFromPoint(clientX, clientY)
+      : null;
+
+    // Keyboard focus lock — outline that word even if the pointer is elsewhere.
     const focusLock = getFocusLockTargetRef.current?.() ?? null;
     if (focusLock) {
       stickyButtonRef.current = null;
@@ -249,69 +285,54 @@ export function CustomCursor({
     }
     focusLockKeyRef.current = null;
 
+    if (pointerRef.current.inside) {
+      if (findHelpTarget(el) || tooltipContainsPoint(clientX, clientY)) {
+        stickyButtonRef.current = null;
+        modeRef.current = "help";
+        targetRef.current = {
+          x: clientX,
+          y: clientY,
+          width: DEFAULT_RING,
+          height: DEFAULT_RING,
+          radius: DEFAULT_RADIUS,
+        };
+        return;
+      }
+
+      const button = findButtonTarget(el);
+      if (button) {
+        stickyButtonRef.current = button;
+        scrubbingRef.current = isScrubThumbTarget(button);
+        modeRef.current = "button";
+        targetRef.current = buttonTargetState(button);
+        return;
+      }
+
+      // Gravity: keep the last button until the pointer leaves a padded zone.
+      const sticky = stickyButtonRef.current;
+      if (sticky && document.contains(sticky) && !sticky.matches(":disabled")) {
+        const stickyRect = sticky.getBoundingClientRect();
+        if (pointInExpandedRect(clientX, clientY, stickyRect, BUTTON_STICK_PAD)) {
+          scrubbingRef.current = isScrubThumbTarget(sticky);
+          modeRef.current = "button";
+          targetRef.current = buttonTargetState(sticky);
+          return;
+        }
+      }
+
+      stickyButtonRef.current = null;
+    }
+
     if (!pointerRef.current.inside) {
       modeRef.current = "hidden";
       stickyButtonRef.current = null;
       return;
     }
 
-    const el = document.elementFromPoint(clientX, clientY);
     if (isTextEditingTarget(el)) {
       modeRef.current = "hidden";
       stickyButtonRef.current = null;
       return;
-    }
-
-    if (findHelpTarget(el) || tooltipContainsPoint(clientX, clientY)) {
-      stickyButtonRef.current = null;
-      modeRef.current = "help";
-      targetRef.current = {
-        x: clientX,
-        y: clientY,
-        width: DEFAULT_RING,
-        height: DEFAULT_RING,
-        radius: DEFAULT_RADIUS,
-      };
-      return;
-    }
-
-    // Gravity: keep the last button until the pointer leaves a padded zone.
-    const sticky = stickyButtonRef.current;
-    if (sticky && document.contains(sticky) && !sticky.matches(":disabled")) {
-      const stickyRect = sticky.getBoundingClientRect();
-      if (pointInExpandedRect(clientX, clientY, stickyRect, BUTTON_STICK_PAD)) {
-        modeRef.current = "button";
-        targetRef.current = buttonTargetState(sticky);
-        return;
-      }
-    }
-
-    const button = findButtonTarget(el);
-    if (button) {
-      stickyButtonRef.current = button;
-      modeRef.current = "button";
-      targetRef.current = buttonTargetState(button);
-      return;
-    }
-
-    stickyButtonRef.current = null;
-
-    const overCanvas =
-      el instanceof HTMLCanvasElement || !!el?.closest(".canvas-host");
-    if (overCanvas) {
-      const node = queryNodeTarget(clientX, clientY);
-      if (node) {
-        const nextRadius = Math.max(18, node.radius + NODE_PAD);
-        modeRef.current = "node";
-        targetRef.current = {
-          x: node.x,
-          y: node.y,
-          width: nextRadius * 2,
-          height: nextRadius * 2,
-          radius: nextRadius,
-        };
-        return;
-      }
     }
 
     modeRef.current = "default";
@@ -366,27 +387,44 @@ export function CustomCursor({
       const ringVisual = ringVisualRef.current;
       const reduced = reduceQuery.matches;
 
-      if (mode === "default" || mode === "help") {
+      if (mode === "default" || mode === "help" || mode === "hidden") {
+        // Keep the pointer sample current while hidden so the fade-out doesn't
+        // lerp the dot toward a stale button center.
         target.x = px;
         target.y = py;
+        if (mode === "hidden") {
+          target.width = DEFAULT_RING;
+          target.height = DEFAULT_RING;
+          target.radius = DEFAULT_RADIUS;
+        }
       }
 
       const dotRate = reduced ? 80 : LERP_DOT;
       const ringRate = reduced ? 80 : LERP_RING;
       const sizeRate = reduced ? 80 : LERP_SIZE;
 
-      // Ring morphs onto magnetic targets (buttons / nodes). The inner dot
-      // keeps tracking the pointer so you can still see where you are inside
-      // a glued button outline. Focus-lock snaps are the exception — both
-      // layers relocate onto the focused word.
+      // Ring morphs onto magnetic button targets. The inner dot keeps tracking
+      // the pointer so you can still see where you are inside a glued outline.
+      // Focus-lock snaps are the exception — both layers relocate onto the
+      // focused word. Scrub chevrons also stay glued to the pointer (ring
+      // stays on the thumb).
       const focusLocked = focusLockKeyRef.current !== null;
-      const stickyTarget = mode === "button" || mode === "node";
-      const dotTx = stickyTarget && !focusLocked ? px : target.x;
-      const dotTy = stickyTarget && !focusLocked ? py : target.y;
-      const dotPull = focusLocked ? dotRate * 1.35 : dotRate;
+      const scrubbing = scrubbingRef.current;
+      const stickyTarget = mode === "button";
+      const dotTx =
+        scrubbing || (stickyTarget && !focusLocked) ? px : target.x;
+      const dotTy =
+        scrubbing || (stickyTarget && !focusLocked) ? py : target.y;
 
-      dotVisual.x = easeToward(dotVisual.x, dotTx, dotPull, dt);
-      dotVisual.y = easeToward(dotVisual.y, dotTy, dotPull, dt);
+      if (scrubbing) {
+        // Snap — the ↔ affordance should feel locked to the cursor.
+        dotVisual.x = dotTx;
+        dotVisual.y = dotTy;
+      } else {
+        const dotPull = focusLocked ? dotRate * 1.35 : dotRate;
+        dotVisual.x = easeToward(dotVisual.x, dotTx, dotPull, dt);
+        dotVisual.y = easeToward(dotVisual.y, dotTy, dotPull, dt);
+      }
 
       ringVisual.x = easeToward(ringVisual.x, target.x, ringRate, dt);
       ringVisual.y = easeToward(ringVisual.y, target.y, ringRate, dt);
@@ -413,6 +451,7 @@ export function CustomCursor({
         pressed && mode !== "hidden" && mode !== "help" ? 0.92 : 1;
       root.dataset.mode = mode;
       root.classList.toggle("is-pressed", pressed && mode !== "hidden");
+      root.classList.toggle("is-scrubbing", scrubbing);
 
       help.style.transform = `translate(${dotVisual.x}px, ${dotVisual.y}px) translate(-50%, -50%)`;
       dot.style.transform = `translate(${dotVisual.x}px, ${dotVisual.y}px) translate(-50%, -50%) scale(${pressScale})`;
@@ -479,7 +518,10 @@ export function CustomCursor({
   return (
     <div ref={rootRef} className="custom-cursor" data-mode="hidden" aria-hidden>
       <div ref={ringRef} className="custom-cursor-ring" />
-      <div ref={dotRef} className="custom-cursor-dot" />
+      <div ref={dotRef} className="custom-cursor-dot">
+        <span className="custom-cursor-dot-chevron is-left" />
+        <span className="custom-cursor-dot-chevron is-right" />
+      </div>
       <div ref={helpRef} className="custom-cursor-help">
         ?
       </div>

@@ -131,7 +131,10 @@ export type RenderCommunity = {
 
 export type GraphSnapshot = {
   nodes: RenderNode[];
+  /** Viz-filtered strands drawn on the canvas (weight threshold + budget). */
   edges: RenderEdge[];
+  /** Full graph edges — detail panel / degree; not all are drawn. */
+  graphEdges: RenderEdge[];
   communities: RenderCommunity[];
   nodeCount: number;
   edgeCount: number;
@@ -142,6 +145,11 @@ export type GraphSnapshot = {
   focusNodeId: string | null;
   /** Sum of node vx²+vy² — used to wait for preview layout settle. */
   layoutEnergy: number;
+  /**
+   * How many leading graph occurrences have finished embedding.
+   * Transcript reveal uses this prefix so token N waits on 0..N-1.
+   */
+  embeddedOccurrencePrefix: number;
 };
 
 export type CommittedWord = {

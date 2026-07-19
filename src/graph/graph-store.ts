@@ -19,6 +19,7 @@ import {
   refreshEdgeScores,
   shouldKeepEdge,
 } from "./combined-weights";
+import { selectRenderEdgesForViz } from "./viz-edges";
 import {
   communityRadius,
   computeCommunityCentroid,
@@ -306,8 +307,22 @@ export class GraphStore {
     const remaining: PendingContext[] = [];
     const max = Math.max(0, limit);
 
+    const head = this.pendingContexts[0];
+    if (!head) {
+      return ready;
+    }
+
+    // Don't start occurrence N until 0..N-1 have finished embedding
+    // (covers in-flight batches already removed from pendingContexts).
+    for (let i = 0; i < head.sequenceIndex; i += 1) {
+      if (!this.occurrences[i]?.embeddingProcessed) {
+        return ready;
+      }
+    }
+
+    let blocked = false;
     for (const pending of this.pendingContexts) {
-      if (ready.length >= max) {
+      if (blocked || ready.length >= max) {
         remaining.push(pending);
         continue;
       }
@@ -336,12 +351,26 @@ export class GraphStore {
           }
         }
       } else {
+        // Strict FIFO: do not skip past an unready older occurrence.
+        blocked = true;
         remaining.push(pending);
       }
     }
 
     this.pendingContexts = remaining;
     return ready;
+  }
+
+  /** Contiguous prefix of occurrences that have finished embedding. */
+  embeddedOccurrencePrefix(): number {
+    let count = 0;
+    for (const occurrence of this.occurrences) {
+      if (!occurrence.embeddingProcessed) {
+        break;
+      }
+      count += 1;
+    }
+    return count;
   }
 
   private buildContextText(sequenceIndex: number): string {
@@ -825,17 +854,21 @@ export class GraphStore {
       };
     });
 
+    const toRenderEdge = (edge: WordEdge) => ({
+      id: edge.id,
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+      combinedWeight: edge.combinedWeight,
+      semanticScore: edge.semanticScore,
+      colocationScore: edge.colocationScore,
+    });
+
     return {
       nodes,
-      // Full edge set stays in the worker; UI gets weight-thresholded strands.
-      edges: this.selectRenderEdges().map((edge) => ({
-        id: edge.id,
-        sourceId: edge.sourceId,
-        targetId: edge.targetId,
-        combinedWeight: edge.combinedWeight,
-        semanticScore: edge.semanticScore,
-        colocationScore: edge.colocationScore,
-      })),
+      // Canvas strands: weight-thresholded + soft budget.
+      edges: this.selectRenderEdges().map(toRenderEdge),
+      // Full adjacency for the detail panel (and anything that needs degree parity).
+      graphEdges: [...this.edges.values()].map(toRenderEdge),
       communities: [...this.communities.values()].map((community) => ({
         id: community.id,
         anchorX: community.anchorX,
@@ -850,32 +883,25 @@ export class GraphStore {
       timestamp: Date.now(),
       focusNodeId: this.focusNodeId,
       layoutEnergy,
+      embeddedOccurrencePrefix: this.embeddedOccurrencePrefix(),
     };
   }
 
   /**
-   * Viz edges only: clear a weight threshold (lower bar if activated).
+   * Viz edges only: weight threshold + soft budget (see selectRenderEdgesForViz).
    * Layout/activation/clustering still use the full edge map.
    */
   private selectRenderEdges(): WordEdge[] {
-    const selected: WordEdge[] = [];
-
-    for (const edge of this.edges.values()) {
+    const candidates = [...this.edges.values()].map((edge) => {
       const sourceAct = this.nodes.get(edge.sourceId)?.activation ?? 0;
       const targetAct = this.nodes.get(edge.targetId)?.activation ?? 0;
       const hot =
         sourceAct >= VIZ_EDGE_CONFIG.activationPriority ||
         targetAct >= VIZ_EDGE_CONFIG.activationPriority;
-      const minWeight = hot
-        ? VIZ_EDGE_CONFIG.activeMinWeight
-        : VIZ_EDGE_CONFIG.minWeight;
-      if (edge.combinedWeight >= minWeight) {
-        selected.push(edge);
-      }
-    }
+      return { edge, combinedWeight: edge.combinedWeight, hot };
+    });
 
-    selected.sort((a, b) => b.combinedWeight - a.combinedWeight);
-    return selected;
+    return selectRenderEdgesForViz(candidates).map((item) => item.edge);
   }
 
   serializeForPersistence(): {

@@ -25,7 +25,9 @@
     "idb": "^8.0.3",
     "pixi.js": "^8.19.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "wink-eng-lite-web-model": "^1.8.1",
+    "wink-nlp": "^2.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

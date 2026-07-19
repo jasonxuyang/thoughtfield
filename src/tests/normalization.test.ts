@@ -21,12 +21,33 @@ describe("normalization", () => {
     expect(normalizeToken("without")).toBe("without");
   });
 
-  it("lemmatizes common forms", () => {
+  it("lemmatizes common forms via wink", () => {
     expect(normalizeToken("browsers")).toBe("browser");
     expect(normalizeToken("running")).toBe("run");
     expect(normalizeToken("related")).toBe("relate");
     expect(normalizeToken("created")).toBe("create");
     expect(normalizeToken("walked")).toBe("walk");
+    expect(normalizeToken("waited")).toBe("wait");
+    expect(normalizeToken("hiding")).toBe("hide");
+    expect(normalizeToken("waiting")).toBe("wait");
+  });
+
+  it("does not invent broken silent-e stems", () => {
+    expect(normalizeToken("waited")).not.toBe("waite");
+    expect(normalizeToken("hiding")).not.toBe("hidin");
+    expect(normalizeToken("hiding")).not.toBe("hid");
+  });
+
+  it("expands colloquial g-drop when the -ing form is known", () => {
+    expect(normalizeToken("hidin")).toBe("hide");
+    expect(normalizeToken("hidin'")).toBe("hide");
+    expect(normalizeToken("talkin")).toBe("talk");
+    expect(normalizeToken("goin")).toBe("go");
+  });
+
+  it("does not g-drop real *in nouns", () => {
+    expect(normalizeToken("cabin")).toBe("cabin");
+    expect(normalizeToken("muffin")).toBe("muffin");
   });
 
   it("canonicalizes technology terms", () => {

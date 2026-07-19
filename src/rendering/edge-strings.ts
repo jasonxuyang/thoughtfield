@@ -57,6 +57,8 @@ type EdgeGlyph = {
   id: string;
   root: Container;
   letters: BitmapText[];
+  sourceLabel: string;
+  targetLabel: string;
   labelKey: string;
   lastTint: number;
   /** Accumulated flow phase for animation. */
@@ -180,7 +182,14 @@ export class EdgeStringDisplay {
         if (glyph) {
           this.destroyGlyph(glyph);
         }
-        glyph = this.createGlyph(edge.id, source.label, target.label, labelKey);
+        const initialLetters = letterCountForDistance(dist, morph.spacing);
+        glyph = this.createGlyph(
+          edge.id,
+          source.label,
+          target.label,
+          labelKey,
+          initialLetters,
+        );
         this.glyphs.set(edge.id, glyph);
         this.container.addChild(glyph.root);
       }
@@ -196,6 +205,7 @@ export class EdgeStringDisplay {
       glyph.root.visible = true;
 
       const used = letterCountForDistance(dist, morph.spacing);
+      this.ensureLetterCount(glyph, used);
       const tint = activationColor(heat);
       const baseAlpha =
         0.12 + morph.weight * 0.22 + activationHeat(heat) * 0.75;
@@ -217,12 +227,8 @@ export class EdgeStringDisplay {
       // Whole lattice slides along the chord; wrap at the ends.
       const crawl = wrap01(glyph.flow * EDGE_STRING_CONFIG.crawlRate);
 
-      for (let i = 0; i < glyph.letters.length; i += 1) {
+      for (let i = 0; i < used; i += 1) {
         const letter = glyph.letters[i]!;
-        if (i >= used) {
-          letter.visible = false;
-          continue;
-        }
         letter.visible = true;
 
         const slot = (i + 1) / (used + 1);
@@ -241,6 +247,11 @@ export class EdgeStringDisplay {
         letter.alpha = Math.min(1, baseAlpha * pulse);
         letter.scale.set(morph.thickness * (0.94 + pulse * 0.08));
       }
+
+      // Hide surplus if the chord shortened (capacity stays for reuse).
+      for (let i = used; i < glyph.letters.length; i += 1) {
+        glyph.letters[i]!.visible = false;
+      }
     }
 
     for (const [id, glyph] of this.glyphs) {
@@ -256,36 +267,53 @@ export class EdgeStringDisplay {
     sourceLabel: string,
     targetLabel: string,
     labelKey: string,
+    letterCount: number,
   ): EdgeGlyph {
     const root = new Container();
-    const chars = lettersForEdge(
+    const count = Math.max(
+      EDGE_STRING_CONFIG.minLetters,
+      Math.min(EDGE_STRING_CONFIG.maxLetters, letterCount),
+    );
+    const glyph: EdgeGlyph = {
+      id,
+      root,
+      letters: [],
       sourceLabel,
       targetLabel,
-      id,
-      EDGE_STRING_CONFIG.maxLetters,
+      labelKey,
+      lastTint: ACTIVATION_INACTIVE_COLOR,
+      flow: hashUnit(id) * Math.PI * 2,
+    };
+    this.ensureLetterCount(glyph, count);
+    return glyph;
+  }
+
+  /** Grow strand capacity up to `count` (never shrinks — surplus stays hidden). */
+  private ensureLetterCount(glyph: EdgeGlyph, count: number): void {
+    const target = Math.max(
+      EDGE_STRING_CONFIG.minLetters,
+      Math.min(EDGE_STRING_CONFIG.maxLetters, count),
     );
-    const letters: BitmapText[] = [];
-    for (const char of chars) {
+    while (glyph.letters.length < target) {
+      const index = glyph.letters.length;
       const text = new BitmapText({
-        text: char,
+        text: letterCharAt(
+          glyph.sourceLabel,
+          glyph.targetLabel,
+          glyph.id,
+          index,
+        ),
         style: {
           fontFamily: LETTER_BITMAP_FONT,
           fontSize: EDGE_STRING_CONFIG.fontSize,
         },
       });
       text.anchor.set(0.5);
-      text.tint = ACTIVATION_INACTIVE_COLOR;
-      root.addChild(text);
-      letters.push(text);
+      text.tint = glyph.lastTint;
+      text.visible = false;
+      glyph.root.addChild(text);
+      glyph.letters.push(text);
     }
-    return {
-      id,
-      root,
-      letters,
-      labelKey,
-      lastTint: ACTIVATION_INACTIVE_COLOR,
-      flow: hashUnit(id) * Math.PI * 2,
-    };
   }
 
   private destroyGlyph(glyph: EdgeGlyph): void {
@@ -352,12 +380,13 @@ function letterCountForDistance(dist: number, spacing: number): number {
   );
 }
 
-function lettersForEdge(
+/** Deterministic strand letter at index — stable as capacity grows. */
+function letterCharAt(
   sourceLabel: string,
   targetLabel: string,
   edgeId: string,
-  count: number,
-): string[] {
+  index: number,
+): string {
   const sourceChars = [...sourceLabel]
     .map((char) => char.toLowerCase())
     .filter((char) => /[a-z0-9]/.test(char));
@@ -369,15 +398,13 @@ function lettersForEdge(
       ? [...sourceChars, ...targetChars]
       : ["a"];
 
-  const chars: string[] = [];
   let state = hashUnit(edgeId) * 1_000_000;
-  for (let i = 0; i < count; i += 1) {
+  for (let i = 0; i <= index; i += 1) {
     state = (state * 1664525 + 1013904223) % 4294967296;
-    const side = i % 2 === 0 ? sourceChars : targetChars;
-    const pickFrom = side.length > 0 ? side : pool;
-    chars.push(pickFrom[Math.floor(state) % pickFrom.length]!);
   }
-  return chars;
+  const side = index % 2 === 0 ? sourceChars : targetChars;
+  const pickFrom = side.length > 0 ? side : pool;
+  return pickFrom[Math.floor(state) % pickFrom.length]!;
 }
 
 function hashUnit(value: string): number {

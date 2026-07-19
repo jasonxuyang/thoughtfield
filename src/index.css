@@ -83,13 +83,53 @@ html.has-custom-cursor [contenteditable=""] {
   position: absolute;
   top: 0;
   left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
   width: 4px;
   height: 4px;
   border-radius: 50%;
   background: #fff;
   opacity: 1;
   will-change: transform;
-  transition: opacity 140ms ease;
+  transition:
+    opacity 140ms ease,
+    width 140ms ease,
+    height 140ms ease,
+    background 140ms ease,
+    border-radius 140ms ease,
+    gap 140ms ease;
+}
+
+.custom-cursor-dot-chevron {
+  display: none;
+  flex: 0 0 auto;
+  width: 0.28rem;
+  height: 0.28rem;
+  border-right: 1.5px solid #fff;
+  border-bottom: 1.5px solid #fff;
+}
+
+.custom-cursor-dot-chevron.is-left {
+  transform: rotate(135deg);
+}
+
+.custom-cursor-dot-chevron.is-right {
+  transform: rotate(-45deg);
+}
+
+/* Scrub drag: swap the mini dot for a ↔ chevron pair. */
+.custom-cursor.is-scrubbing .custom-cursor-dot {
+  width: 0.85rem;
+  height: 0.45rem;
+  gap: 0.12rem;
+  border-radius: 0;
+  background: transparent;
+}
+
+.custom-cursor.is-scrubbing .custom-cursor-dot-chevron {
+  display: block;
 }
 
 .custom-cursor-help {
@@ -110,20 +150,17 @@ html.has-custom-cursor [contenteditable=""] {
   transition: opacity 140ms ease;
 }
 
-/* Button / node: solid outline (not difference-blended). Keep the inner
+/* Button: solid outline (not difference-blended). Keep the inner
    dot so the pointer stays visible inside the morph. */
-.custom-cursor[data-mode="button"],
-.custom-cursor[data-mode="node"] {
+.custom-cursor[data-mode="button"] {
   mix-blend-mode: normal;
 }
 
-.custom-cursor[data-mode="button"] .custom-cursor-help,
-.custom-cursor[data-mode="node"] .custom-cursor-help {
+.custom-cursor[data-mode="button"] .custom-cursor-help {
   opacity: 0;
 }
 
-.custom-cursor[data-mode="button"] .custom-cursor-ring,
-.custom-cursor[data-mode="node"] .custom-cursor-ring {
+.custom-cursor[data-mode="button"] .custom-cursor-ring {
   border-color: #fff;
 }
 
@@ -360,8 +397,10 @@ button:disabled {
   flex-direction: column;
   align-items: stretch;
   gap: 0.9rem;
-  overflow: hidden;
-  pointer-events: none;
+  /* Visible so the keep-typing field can grow upward over the canvas. */
+  overflow: visible;
+  /* Own the full dock box (padding + flex gap) so clicks never reach nodes. */
+  pointer-events: auto;
 }
 
 .transcript-panel.is-empty {
@@ -370,6 +409,8 @@ button:disabled {
   align-items: flex-start;
   padding: 1rem 1.1rem max(1rem, env(safe-area-inset-bottom));
   background: transparent;
+  /* Only the typing chrome should catch hits — rest of the field stays live. */
+  pointer-events: none;
 }
 
 .transcript-panel.is-entry {
@@ -387,6 +428,8 @@ button:disabled {
   justify-content: center;
   padding: 1.5rem;
   overflow: auto;
+  /* Card catches hits; preview graph stays clickable around it. */
+  pointer-events: none;
   background: radial-gradient(
     ellipse 70% 55% at 50% 48%,
     rgba(0, 0, 0, 0.55) 0%,
@@ -449,19 +492,23 @@ button:disabled {
 .transcript-paste {
   display: block;
   width: 100%;
-  height: 2.85rem;
+  min-height: 2.85rem;
+  max-height: 9rem;
   margin: 0;
-  padding: 0 7.5rem 0 0;
+  padding: 0.7rem 7.5rem 0.7rem 0;
   border: none;
   border-radius: 0;
   background: transparent;
   color: rgba(255, 255, 255, 0.92);
   font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
   font-size: 0.95rem;
-  line-height: 2.85rem;
+  line-height: 1.45;
   letter-spacing: 0.01em;
   text-align: left;
   outline: none;
+  resize: none;
+  overflow-y: auto;
+  field-sizing: content;
 }
 
 .transcript-paste::placeholder {
@@ -470,12 +517,11 @@ button:disabled {
 
 .transcript-entry-actions {
   position: absolute;
-  top: 50%;
   right: 0.45rem;
+  bottom: 0.35rem;
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  transform: translateY(-50%);
+  gap: 0.85rem;
 }
 
 .transcript-try-sample {
@@ -532,64 +578,114 @@ button.transcript-try-sample:hover:not(:disabled) {
 
 .transcript-toolbar {
   flex: 0 0 auto;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.15rem;
+  /* One-line layout slot — multi-line input grows upward from here. */
+  height: 2.85rem;
+  min-height: 2.85rem;
+  overflow: visible;
   pointer-events: auto;
 }
 
 .transcript-panel.is-empty .transcript-toolbar {
   justify-content: flex-start;
+  width: min(34rem, calc(100vw - 2.2rem));
 }
 
-/* Same slot as the mic — typing replaces Use voice above the strip. */
-.transcript-typing-line {
-  max-width: min(36rem, calc(100vw - 2.5rem));
-  padding: 0.15rem 0.4rem;
+/* Same pattern as entry: text left, mic/submit right, one shared underline. */
+.transcript-typing-field {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  z-index: 1;
+  width: min(34rem, calc(100vw - 2.5rem));
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.28);
+  background: transparent;
+  transform: translateX(-50%);
+  transition: border-color 160ms ease;
+}
+
+.transcript-panel.is-empty .transcript-typing-field {
+  left: 0;
+  width: 100%;
+  transform: none;
+}
+
+.transcript-typing-field:hover,
+.transcript-typing-field:focus-within {
+  border-bottom-color: rgba(255, 255, 255, 0.72);
+}
+
+.transcript-typing-input {
+  display: block;
+  width: 100%;
+  min-height: 2.85rem;
+  /* ~5 lines + vertical padding, then scroll. */
+  max-height: calc(1.4rem + 5 * 1.45em);
+  margin: 0;
+  padding: 0.7rem 3.4rem 0.7rem 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
   font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   font-weight: 400;
   letter-spacing: 0.01em;
-  line-height: 1.35;
-  color: rgba(255, 255, 255, 0.94);
-  text-align: center;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  pointer-events: none;
+  line-height: 1.45;
+  text-align: left;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  field-sizing: content;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 1.35rem,
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 1.35rem,
+    #000 100%
+  );
 }
 
-.transcript-typing-word::after {
-  content: "";
-  display: inline-block;
-  width: 1px;
-  height: 1em;
-  margin-left: 1px;
-  background: rgba(255, 255, 255, 0.85);
-  vertical-align: text-bottom;
-  animation: transcript-caret-blink 1s steps(1) infinite;
+.transcript-typing-input::-webkit-scrollbar {
+  display: none;
 }
 
-@keyframes transcript-caret-blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
+.transcript-typing-field.is-listening .transcript-typing-input {
+  padding-right: 5.25rem;
 }
 
-.transcript-type-input {
+.transcript-typing-input::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.transcript-typing-actions {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: 0;
-  border: 0;
-  opacity: 0;
-  pointer-events: none;
+  right: 0.45rem;
+  bottom: 0.35rem;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+}
+
+.transcript-scroll {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  /* Catch hits in the body/scrub gap so they don't reach canvas nodes. */
+  pointer-events: auto;
 }
 
 .transcript-body {
@@ -618,6 +714,59 @@ button.transcript-try-sample:hover:not(:disabled) {
 
 .transcript-body::-webkit-scrollbar {
   display: none;
+}
+
+.transcript-scrub {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  /* Visual thumb stays small; this strip is the grab / block-through target. */
+  height: 1.35rem;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+/* Extend the hit box above/below the layout strip without eating more gap. */
+.transcript-scrub::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* Larger pad toward the words below. */
+  top: -0.35rem;
+  bottom: -0.55rem;
+}
+
+.transcript-scrub-ghost,
+.transcript-scrub-thumb {
+  position: absolute;
+  top: 50%;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin: 0;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.transcript-scrub-ghost {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.transcript-scrub-thumb {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.transcript-scroll:hover .transcript-scrub-thumb,
+.transcript-scrub:focus-visible .transcript-scrub-thumb,
+.transcript-scrub.is-active .transcript-scrub-thumb {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.transcript-scroll:hover .transcript-scrub-ghost,
+.transcript-scrub:focus-visible .transcript-scrub-ghost,
+.transcript-scrub.is-active .transcript-scrub-ghost {
+  background: rgba(255, 255, 255, 0.32);
 }
 
 .transcript-text {
@@ -654,6 +803,24 @@ button.transcript-try-sample:hover:not(:disabled) {
 
 .transcript-word.is-interactive {
   cursor: pointer;
+  /* Let the hit-slop ::before extend past the glyph box. */
+  overflow: visible;
+}
+
+/* Keep the reveal block clipped while it slides out. */
+.transcript-word.is-interactive.is-revealing {
+  overflow: hidden;
+}
+
+/*
+ * Expand the click/hover target to match CustomCursor BUTTON_PAD (9px) so the
+ * hover ring isn't larger than the hit area. Absolutely positioned — does not
+ * change the box the virtualizer measures.
+ */
+.transcript-word.is-interactive:not(.is-revealing)::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
 }
 
 .transcript-word.is-focused {
@@ -736,14 +903,41 @@ button.transcript-try-sample:hover:not(:disabled) {
   left: 24px;
   z-index: 3;
   width: min(17.5rem, calc(100% - 48px));
-  max-height: min(70vh, 28rem);
-  overflow: auto;
-  padding: 0.9rem 1rem 1rem;
+  overflow: hidden;
   font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
   color: rgba(255, 255, 255, 0.88);
   background: rgba(0, 0, 0, 0.88);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  scrollbar-width: thin;
+}
+
+/* Native bar stays hidden — macOS overlay scrollbars ignore thumb styling. */
+.node-detail-panel-scroll {
+  max-height: min(62vh, 24rem);
+  overflow: auto;
+  padding: 0.9rem 1rem 1rem;
+  scrollbar-width: none;
+}
+
+.node-detail-panel-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Custom thumb; opacity gated by panel hover. */
+.node-detail-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 3px;
+  width: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.node-detail-panel.is-hovered .node-detail-scrollbar {
+  opacity: 1;
 }
 
 /* Kill the global button invert hover inside this panel. */

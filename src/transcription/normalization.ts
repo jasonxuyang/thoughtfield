@@ -1,3 +1,11 @@
+import winkNLP from "wink-nlp";
+import model from "wink-eng-lite-web-model";
+
+const nlp = winkNLP(model);
+const its = nlp.its;
+/** Reused for isOOV checks (API is on Document). */
+const oovProbe = nlp.readDoc("x");
+
 const FILLERS = new Set([
   "um",
   "uh",
@@ -149,137 +157,85 @@ const TECH_CANONICAL: Record<string, string> = {
   "pixi js": "pixijs",
 };
 
-const IRREGULAR_LEMMAS: Record<string, string> = {
-  running: "run",
-  ran: "run",
-  models: "model",
-  browsers: "browser",
-  children: "child",
-  men: "man",
-  women: "woman",
-  better: "good",
-  best: "good",
-  worse: "bad",
-  worst: "bad",
-  going: "go",
-  went: "go",
-  doing: "do",
-  did: "do",
-  having: "have",
-  had: "have",
-  making: "make",
-  made: "make",
-  taking: "take",
-  took: "take",
-  coming: "come",
-  came: "come",
-  seeing: "see",
-  saw: "see",
-  getting: "get",
-  got: "get",
-  knowing: "know",
-  knew: "know",
-  thinking: "think",
-  thought: "think",
-  saying: "say",
-  said: "say",
-  telling: "tell",
-  told: "tell",
-  leaving: "leave",
-  left: "leave",
-  feeling: "feel",
-  felt: "feel",
-  becoming: "become",
-  became: "become",
-  beginning: "begin",
-  began: "begin",
-  keeping: "keep",
-  kept: "keep",
-  holding: "hold",
-  held: "hold",
-  writing: "write",
-  wrote: "write",
-  reading: "read",
-  speaking: "speak",
-  spoke: "speak",
-  hearing: "hear",
-  heard: "hear",
-  finding: "find",
-  found: "find",
-  giving: "give",
-  gave: "give",
-  using: "use",
-  used: "use",
-};
+const lemmaCache = new Map<string, string>();
 
 function stripPunctuation(token: string): string {
   return token.replace(/^[^a-z0-9+#]+|[^a-z0-9+#]+$/gi, "");
 }
 
+/**
+ * Attribute for the token matching `want` (or the last word-like token).
+ * Skips frame words like "to" in `to hiding`.
+ */
+function tokenAttr(
+  text: string,
+  want: string,
+  which: "normal" | "lemma",
+): string | null {
+  const doc = nlp.readDoc(text);
+  const tokens = doc.tokens();
+  const values = tokens.out(its.value) as string[];
+  // wink model addon typings disagree with TokenItsFunction — runtime is fine.
+  const attrFn = which === "normal" ? its.normal : its.lemma;
+  const attrs = tokens.out(attrFn as typeof its.value) as string[];
+  const wantLower = want.toLowerCase();
+  let fallback: string | null = null;
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i];
+    if (!value || /^[^a-z0-9]+$/i.test(value)) {
+      continue;
+    }
+    const attrValue = attrs[i] ?? null;
+    if (value.toLowerCase() === wantLower) {
+      return attrValue;
+    }
+    fallback = attrValue;
+  }
+  return fallback;
+}
+
+/**
+ * Colloquial g-drop (hidin / talkin) → -ing when the bare form is OOV but
+ * the -ing form is in-vocabulary (avoids cabin → cab).
+ */
+function expandColloquialIng(token: string): string {
+  if (!/^[a-z]{3,}in$/.test(token)) {
+    return token;
+  }
+  if (!oovProbe.isOOV(token)) {
+    return token;
+  }
+  const expanded = `${token}g`;
+  if (oovProbe.isOOV(expanded)) {
+    return token;
+  }
+  return expanded;
+}
+
+/**
+ * Lemmatize with wink. Verbal frame helps isolated -ing forms that would
+ * otherwise tag as nouns (hiding → hide).
+ */
 function lemmatize(token: string): string {
-  if (IRREGULAR_LEMMAS[token]) {
-    return IRREGULAR_LEMMAS[token]!;
+  const cached = lemmaCache.get(token);
+  if (cached !== undefined) {
+    return cached;
   }
 
-  if (token.endsWith("ies") && token.length > 4) {
-    return `${token.slice(0, -3)}y`;
-  }
+  const form = expandColloquialIng(token);
+  // wink normal maps some colloquialisms (goin → going) before lemma.
+  const normal = tokenAttr(form, form, "normal") ?? form;
+  const needsVerbHint =
+    normal.endsWith("ing") ||
+    normal.endsWith("ed") ||
+    normal !== form;
 
-  if (token.endsWith("ves") && token.length > 4) {
-    return `${token.slice(0, -3)}f`;
-  }
+  const lemma = needsVerbHint
+    ? (tokenAttr(`to ${normal}`, normal, "lemma") ?? normal)
+    : (tokenAttr(normal, normal, "lemma") ?? normal);
 
-  if (
-    token.endsWith("sses") ||
-    token.endsWith("xes") ||
-    token.endsWith("zes") ||
-    token.endsWith("ches") ||
-    token.endsWith("shes")
-  ) {
-    return token.slice(0, -2);
-  }
-
-  if (token.endsWith("ing") && token.length > 5) {
-    const stem = token.slice(0, -3);
-    if (stem.length >= 3 && stem.at(-1) === stem.at(-2)) {
-      return stem.slice(0, -1);
-    }
-    return stem;
-  }
-
-  if (token.endsWith("ed") && token.length > 4) {
-    // Silent-e past forms: related → relate (not relat), created → create.
-    if (
-      token.endsWith("ated") ||
-      token.endsWith("ited") ||
-      token.endsWith("uted") ||
-      token.endsWith("oted") ||
-      token.endsWith("ived") ||
-      token.endsWith("ized") ||
-      token.endsWith("ised") ||
-      token.endsWith("aced") ||
-      token.endsWith("iced") ||
-      token.endsWith("uced") ||
-      token.endsWith("osed") ||
-      token.endsWith("ased") ||
-      token.endsWith("amed") ||
-      token.endsWith("imed") ||
-      token.endsWith("umed")
-    ) {
-      return token.slice(0, -1);
-    }
-    const stem = token.slice(0, -2);
-    if (stem.length >= 3 && stem.at(-1) === stem.at(-2)) {
-      return stem.slice(0, -1);
-    }
-    return stem;
-  }
-
-  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) {
-    return token.slice(0, -1);
-  }
-
-  return token;
+  lemmaCache.set(token, lemma);
+  return lemma;
 }
 
 export function normalizeToken(raw: string): string | null {
@@ -322,13 +278,18 @@ export function normalizeToken(raw: string): string | null {
     return null;
   }
 
-  const lemma = lemmatize(stripped);
+  const lemma = lemmatize(stripped).toLowerCase();
 
   if (lemma.length === 1 && !ONE_CHAR_ALLOWLIST.has(lemma)) {
     return null;
   }
 
   if (!lemma || /^\d+$/.test(lemma)) {
+    return null;
+  }
+
+  // Lemma can land on a stop word (e.g. doing → do).
+  if (STOP_WORDS.has(lemma) && !NEGATION_ALLOWLIST.has(lemma)) {
     return null;
   }
 
@@ -356,7 +317,10 @@ export function normalizeTranscriptWords(
     if (next) {
       const multi = `${raw.toLowerCase()} ${next.toLowerCase()}`;
       const multiNorm = normalizeToken(multi);
-      if (multiNorm && TECH_CANONICAL[multi.replace(/\s+/g, " ").toLowerCase()]) {
+      if (
+        multiNorm &&
+        TECH_CANONICAL[multi.replace(/\s+/g, " ").toLowerCase()]
+      ) {
         results.push({ raw: `${raw} ${next}`, normalized: multiNorm });
         i += 1;
         continue;

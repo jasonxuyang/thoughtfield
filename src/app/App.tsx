@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   DEFAULT_SETTINGS,
-  IDLE_TOUR_CONFIG,
   INGEST_QUEUE_CONFIG,
   type AlgorithmSettings,
 } from "../config/algorithms";
@@ -23,7 +22,6 @@ import {
   transcriptToCommittedWords,
   USE_DEMO_TRANSCRIPT,
 } from "../demo/seed-transcript";
-import { buildIdleTourOrder } from "../graph/tour-order";
 import type { CommittedWord, GraphSnapshot } from "../graph/graph-types";
 import {
   clearPersistedState,
@@ -92,17 +90,13 @@ export function App() {
   const previewLoopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  /** Ambient tour when nothing is selected and the user has been idle. */
-  const idleTourTimerRef = useRef<number | null>(null);
-  const idleTourWatchRef = useRef<number | null>(null);
-  const idleTourActiveRef = useRef(false);
-  const idleTourOrderRef = useRef<string[]>([]);
-  const idleTourIndexRef = useRef(0);
-  const lastIdleActivityAtRef = useRef(performance.now());
-  const canvasHoveringRef = useRef(false);
+  /**
+   * Shared canvas ↔ transcript follow clock. Pan/zoom or transcript scrub both
+   * bump this; home-camera chase and transcript return-to-focus only resume
+   * after the same idle window.
+   */
+  const lastFollowActivityAtRef = useRef(0);
   const listeningRef = useRef(false);
-  /** Ignore activity bumps caused by the tour's own transcript chase. */
-  const idleTourDrivingRef = useRef(false);
 
   const [listening, setListening] = useState(false);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
@@ -121,10 +115,11 @@ export function App() {
   const transcriptBaselineRef = useRef("");
   const committedTextRef = useRef("");
   committedTextRef.current = committedText;
-  /** Normalized labels whose spheres are visible on the canvas. */
-  const [canvasLabels, setCanvasLabels] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  /**
+   * Contiguous graph-occurrence prefix that has finished embedding.
+   * Transcript tokens reveal in speech order from this count (not by label).
+   */
+  const [revealedOccurrenceCount, setRevealedOccurrenceCount] = useState(0);
   /** label → node id for transcript hover → same activate-node path as Pixi. */
   const labelToNodeIdRef = useRef<Map<string, string>>(new Map());
   /** node id → label for map hover → scroll transcript to the word. */
@@ -135,7 +130,10 @@ export function App() {
   >(null);
   /** Map activation → scroll the matching transcript token into view. */
   const transcriptScrollRef = useRef<
-    ((label: string, options?: { lockCursor?: boolean }) => void) | null
+    ((
+      label: string,
+      options?: { lockCursor?: boolean; focus?: boolean },
+    ) => void) | null
   >(null);
   const transcriptReleaseCursorLockRef = useRef<(() => void) | null>(null);
   const snapshotRef = useRef<GraphSnapshot | null>(null);
@@ -172,125 +170,14 @@ export function App() {
     },
   );
 
-  const clearIdleTourTimer = useEffectEvent(() => {
-    if (idleTourTimerRef.current !== null) {
-      window.clearTimeout(idleTourTimerRef.current);
-      idleTourTimerRef.current = null;
-    }
+  /** Canvas / transcript / pointer motion — pauses both follow cameras together. */
+  const bumpFollowActivity = useEffectEvent(() => {
+    lastFollowActivityAtRef.current = performance.now();
   });
 
-  const stopIdleTour = useEffectEvent(() => {
-    const wasActive = idleTourActiveRef.current;
-    idleTourActiveRef.current = false;
-    idleTourDrivingRef.current = false;
-    clearIdleTourTimer();
-    // Only drop a tour-owned outline — keyboard nav also calls selectNode →
-    // stopIdleTour, and must keep the lock it just acquired.
-    if (wasActive) {
-      transcriptReleaseCursorLockRef.current?.();
-    }
-  });
-
-  const bumpIdleActivity = useEffectEvent((options?: { force?: boolean }) => {
-    // Ignore self-inflicted transcript chase unless the caller forces it
-    // (e.g. pointer unlocked the tour cursor outline).
-    if (idleTourDrivingRef.current && !options?.force) {
-      return;
-    }
-    lastIdleActivityAtRef.current = performance.now();
-    if (idleTourActiveRef.current) {
-      stopIdleTour();
-    }
-  });
-
-  const stepIdleTour = useEffectEvent(() => {
-    idleTourTimerRef.current = null;
-    if (!idleTourActiveRef.current) {
-      return;
-    }
-    if (
-      previewActiveRef.current ||
-      selectedNodeIdRef.current !== null ||
-      canvasHoveringRef.current ||
-      listeningRef.current
-    ) {
-      stopIdleTour();
-      return;
-    }
-
-    const snap = snapshotRef.current;
-    if (!snap) {
-      stopIdleTour();
-      return;
-    }
-
-    let order = idleTourOrderRef.current;
-    const readyIds = new Set(
-      snap.nodes.filter((node) => node.embeddingReady).map((node) => node.id),
-    );
-    order = order.filter((id) => readyIds.has(id));
-    if (order.length === 0) {
-      order = buildIdleTourOrder(snap.nodes, snap.edges);
-      idleTourIndexRef.current = 0;
-    }
-    idleTourOrderRef.current = order;
-    if (order.length === 0) {
-      stopIdleTour();
-      return;
-    }
-
-    // Loop: wrap and rebuild the walk so the next pass can pick up new nodes.
-    if (idleTourIndexRef.current >= order.length) {
-      idleTourIndexRef.current = 0;
-      order = buildIdleTourOrder(snap.nodes, snap.edges);
-      idleTourOrderRef.current = order;
-      if (order.length === 0) {
-        stopIdleTour();
-        return;
-      }
-    }
-
-    const nodeId = order[idleTourIndexRef.current]!;
-    idleTourIndexRef.current += 1;
-    const wrapped = idleTourIndexRef.current >= order.length;
-
-    idleTourDrivingRef.current = true;
-    activateNode(nodeId, { updateFocus: true });
-    pixiRef.current?.focusNode(nodeId);
-    const label = nodeIdToLabelRef.current.get(nodeId);
-    if (label) {
-      // Outline the transcript word like arrow-key focus.
-      transcriptScrollRef.current?.(label, { lockCursor: true });
-    }
-    window.setTimeout(() => {
-      idleTourDrivingRef.current = false;
-    }, 1_200);
-
-    // Always reschedule — the tour loops until user activity stops it.
-    idleTourTimerRef.current = window.setTimeout(
-      () => {
-        stepIdleTour();
-      },
-      wrapped ? IDLE_TOUR_CONFIG.loopPauseMs : IDLE_TOUR_CONFIG.stepMs,
-    );
-  });
-
-  const startIdleTour = useEffectEvent(() => {
-    if (idleTourActiveRef.current || previewActiveRef.current) {
-      return;
-    }
-    const snap = snapshotRef.current;
-    if (!snap || selectedNodeIdRef.current !== null) {
-      return;
-    }
-    const order = buildIdleTourOrder(snap.nodes, snap.edges);
-    if (order.length === 0) {
-      return;
-    }
-    idleTourActiveRef.current = true;
-    idleTourOrderRef.current = order;
-    idleTourIndexRef.current = 0;
-    stepIdleTour();
+  /** Node / transcript click — resume home chase immediately. */
+  const clearFollowActivity = useEffectEvent(() => {
+    lastFollowActivityAtRef.current = 0;
   });
 
   const selectNode = useEffectEvent(
@@ -310,11 +197,9 @@ export function App() {
       if (!nodeId) {
         setSelectedDetail(null);
         pixiRef.current?.clearFocus();
-        bumpIdleActivity();
         return;
       }
-      stopIdleTour();
-      bumpIdleActivity();
+      clearFollowActivity();
       const snap = snapshotRef.current;
       if (!snap) {
         setSelectedDetail(null);
@@ -519,7 +404,7 @@ export function App() {
     releaseEntryPreviewTour();
     postGraph({ type: "clear" });
     void clearPersistedState();
-    setCanvasLabels(new Set());
+    setRevealedOccurrenceCount(0);
     selectedNodeIdRef.current = null;
     snapshotRef.current = null;
     setSelectedDetail(null);
@@ -537,8 +422,6 @@ export function App() {
     setTypedPending("");
     selectedNodeIdRef.current = null;
     setSelectedDetail(null);
-    stopIdleTour();
-    bumpIdleActivity();
     postGraph({
       type: "hydrate",
       payload: {
@@ -629,9 +512,8 @@ export function App() {
             markFieldSettled();
           }
         }
-        // Transcript reveals words once their spheres land on the canvas.
-        // Also keep label→id + activation brightness in sync with the field.
-        const nextLabels = new Set<string>();
+        // Transcript reveals by embedded occurrence prefix (speech order).
+        // Label→id + activation still track embedding-ready spheres for hover.
         const nextIds = new Map<string, string>();
         const nextNodeLabels = new Map<string, string>();
         const nextActivations = new Map<string, number>();
@@ -639,7 +521,6 @@ export function App() {
           if (!node.embeddingReady) {
             continue;
           }
-          nextLabels.add(node.label);
           nextIds.set(node.label, node.id);
           nextNodeLabels.set(node.id, node.label);
           nextActivations.set(node.label, node.activation);
@@ -659,14 +540,12 @@ export function App() {
             );
           }
         }
-        setCanvasLabels((previous) => {
-          if (
-            previous.size === nextLabels.size &&
-            [...nextLabels].every((label) => previous.has(label))
-          ) {
+        setRevealedOccurrenceCount((previous) => {
+          const next = message.snapshot.embeddedOccurrencePrefix;
+          if (previous === next) {
             return previous;
           }
-          return nextLabels;
+          return next;
         });
         break;
       case "embed-request":
@@ -722,13 +601,10 @@ export function App() {
       // Hover pulses only — camera + transcript sync happen on click/select.
       activateNode(nodeId, { updateFocus: false });
     };
-    pixi.onNodeHoverChange = (nodeId) => {
-      canvasHoveringRef.current = nodeId !== null;
-      bumpIdleActivity();
-    };
     pixi.onUserCameraInteract = () => {
-      bumpIdleActivity();
+      bumpFollowActivity();
     };
+    pixi.getFollowActivityAt = () => lastFollowActivityAtRef.current;
     pixi.onNodeSelect = (nodeId) => {
       // Keep the entry overlay uncluttered — pulse only, no detail panel.
       if (previewActiveRef.current) {
@@ -889,34 +765,8 @@ export function App() {
       graphWorker.postMessage({ type: "tick", deltaMs });
     }, 32);
 
-    idleTourWatchRef.current = window.setInterval(() => {
-      if (
-        previewActiveRef.current ||
-        idleTourActiveRef.current ||
-        selectedNodeIdRef.current !== null ||
-        canvasHoveringRef.current ||
-        listeningRef.current
-      ) {
-        return;
-      }
-      const snap = snapshotRef.current;
-      if (!snap || snap.nodeCount === 0) {
-        return;
-      }
-      const idleMs = performance.now() - lastIdleActivityAtRef.current;
-      if (idleMs < IDLE_TOUR_CONFIG.idleStartMs) {
-        return;
-      }
-      startIdleTour();
-    }, 400);
-
     return () => {
       window.clearInterval(tickId);
-      if (idleTourWatchRef.current !== null) {
-        window.clearInterval(idleTourWatchRef.current);
-        idleTourWatchRef.current = null;
-      }
-      stopIdleTour();
       previewActiveRef.current = false;
       previewNodeIdsRef.current = [];
       if (previewLoopTimerRef.current !== null) {
@@ -942,21 +792,18 @@ export function App() {
 
   useEffect(() => {
     listeningRef.current = listening;
-    if (listening) {
-      bumpIdleActivity();
-    }
   }, [listening]);
 
-  // Any pointer motion counts as activity (not just pan / node hover).
+  // Any pointer motion pauses the shared canvas/transcript follow cameras.
   useEffect(() => {
     const onPointerMove = () => {
-      bumpIdleActivity({ force: true });
+      bumpFollowActivity();
     };
     window.addEventListener("pointermove", onPointerMove, { passive: true });
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
     };
-  }, [bumpIdleActivity]);
+  }, [bumpFollowActivity]);
 
   // Start the entry activation tour only after the boot screen can dismiss —
   // so settle work isn't competing with pulse animations under the overlay.
@@ -1021,7 +868,7 @@ export function App() {
     setCommittedText("");
     setPendingText("");
     setTypedPending("");
-    setCanvasLabels(new Set());
+    setRevealedOccurrenceCount(0);
     selectedNodeIdRef.current = null;
     snapshotRef.current = null;
     setSelectedDetail(null);
@@ -1054,7 +901,6 @@ export function App() {
    * baseline so a later listen session appends instead of replaying.
    */
   const prepareForTypedInput = useEffectEvent(() => {
-    bumpIdleActivity();
     const needsFold =
       listeningRef.current ||
       previewActiveRef.current ||
@@ -1117,11 +963,6 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const queryNodeCursorTarget = useCallback(
-    (clientX: number, clientY: number) =>
-      pixiRef.current?.queryNodeCursorTarget(clientX, clientY) ?? null,
-    [],
-  );
   /** Transcript arrow-nav → custom cursor outline lock. */
   const transcriptFocusLockTargetRef = useRef<
     (() => FocusLockTarget | null) | null
@@ -1133,10 +974,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <CustomCursor
-        queryNodeTarget={queryNodeCursorTarget}
-        getFocusLockTarget={getTranscriptFocusLockTarget}
-      />
+      <CustomCursor getFocusLockTarget={getTranscriptFocusLockTarget} />
       <BootScreen
         transcription={transcription}
         embeddings={embeddings}
@@ -1188,7 +1026,7 @@ export function App() {
             committed={committedText}
             pending={pendingText}
             typedPending={typedPending}
-            canvasLabels={canvasLabels}
+            revealedOccurrenceCount={revealedOccurrenceCount}
             focusedLabel={selectedDetail?.label ?? null}
             listening={listening}
             ready={modelsReady}
@@ -1205,7 +1043,6 @@ export function App() {
             onCommitTypedWords={handleCommitTypedWords}
             onTrySample={handleTrySample}
             onActivateLabel={(label) => {
-              bumpIdleActivity();
               const nodeId = labelToNodeIdRef.current.get(label);
               if (nodeId) {
                 // Transcript hover: pulse only. Click uses onSelectLabel → focus.
@@ -1213,10 +1050,12 @@ export function App() {
               }
             }}
             onSelectLabel={selectLabel}
-            onUserScrollActivity={bumpIdleActivity}
-            onCursorLockRelease={() => {
-              bumpIdleActivity({ force: true });
-            }}
+            onUserScrollActivity={bumpFollowActivity}
+            getFollowActivityAt={() => lastFollowActivityAtRef.current}
+            isHomeFollowPaused={() =>
+              pixiRef.current?.isHomeFollowPaused() ?? false
+            }
+            onCursorLockRelease={bumpFollowActivity}
             activationSinkRef={transcriptActivationRef}
             scrollToLabelRef={transcriptScrollRef}
             focusLockTargetGetterRef={transcriptFocusLockTargetRef}

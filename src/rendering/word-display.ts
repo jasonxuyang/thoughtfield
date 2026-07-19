@@ -84,11 +84,6 @@ type WispArc = {
   r1: number;
 };
 
-type DepthDrawable = {
-  display: BitmapText;
-  depth: number;
-};
-
 type WordGlyph = {
   root: Container;
   letters: LetterGlyph[];
@@ -195,8 +190,11 @@ export class WordDisplay {
         }
         newSphereBudget -= 1;
 
+        const root = new Container();
+        // Depth via zIndex + one sortChildren — avoids O(n) setChildIndex churn.
+        root.sortableChildren = true;
         glyph = {
-          root: new Container(),
+          root,
           letters: [],
           wisps: [],
           wispEmit: 0,
@@ -280,8 +278,8 @@ export class WordDisplay {
       this.emitWisps(glyph, node, heat, dt);
 
       glyph.sortClock += 1;
+      // Throttled painter's order; every frame while hot so wisps layer correctly.
       const shouldSort = glyph.sortClock % 3 === 0 || heat > 0.15;
-      const drawOrder: DepthDrawable[] | null = shouldSort ? [] : null;
 
       for (const letter of glyph.letters) {
         // Expand from the sphere center onto shell positions.
@@ -303,17 +301,15 @@ export class WordDisplay {
             (0.36 + projected.scale * 0.32 + heat * 0.62),
         );
 
-        drawOrder?.push({ display: letter.text, depth: projected.depth });
+        if (shouldSort) {
+          letter.text.zIndex = projected.depth;
+        }
       }
 
-      this.updateWisps(glyph, heat, appear, tint, tilt, dt, drawOrder);
+      this.updateWisps(glyph, heat, appear, tint, tilt, dt, shouldSort);
 
-      // Painter's algorithm — throttled; full sort while a node is hot.
-      if (drawOrder) {
-        drawOrder.sort((a, b) => a.depth - b.depth);
-        for (let i = 0; i < drawOrder.length; i += 1) {
-          glyph.root.setChildIndex(drawOrder[i]!.display, i);
-        }
+      if (shouldSort) {
+        glyph.root.sortChildren();
       }
 
       glyph.prevHeat = heat;
@@ -458,7 +454,7 @@ export class WordDisplay {
     _tint: number,
     tilt: number,
     dt: number,
-    drawOrder: DepthDrawable[] | null,
+    shouldSort: boolean,
   ): void {
     const tailLag = (BEADS_PER_ARM - 1) * ARM_BEAD_LAG;
 
@@ -510,7 +506,9 @@ export class WordDisplay {
               (0.55 + projected.scale * 0.4),
           );
 
-          drawOrder?.push({ display: bead.text, depth: projected.depth });
+          if (shouldSort) {
+            bead.text.zIndex = projected.depth;
+          }
         }
       }
     }

@@ -21,7 +21,6 @@ import {
   resetCamera,
   screenToWorld,
   smoothDamp,
-  worldToScreen,
   worldViewportBounds,
   zoomAt,
   type CameraState,
@@ -42,6 +41,8 @@ type ActivePointer = {
 
 /** Screen-space slop: below this, a press does not start a pan. */
 const CLICK_SLOP_PX = 8;
+/** Ignore sub-pixel / camera-chase jitter when updating hover. */
+const HOVER_INTENT_PX = 2;
 
 export class PixiGraphApp {
   readonly app: Application;
@@ -62,9 +63,15 @@ export class PixiGraphApp {
   /** True while the user has pulled away from the default viewport. */
   private userOverride = false;
   private lastUserInputAt = 0;
+  /** Click/select focus — ignore shared idle pause until the next pan/zoom. */
+  private forceFollow = false;
   private chaseVelX: SmoothVelocity = { v: 0 };
   private chaseVelY: SmoothVelocity = { v: 0 };
   private chaseVelScale: SmoothVelocity = { v: 0 };
+  /** Previous field centroid for sticky-pan drift compensation. */
+  private lastContentAnchor: { x: number; y: number } | null = null;
+  /** Compensated camera XY; large centroid jumps ease toward this. */
+  private driftFollowPos: { x: number; y: number } | null = null;
   /** Last visible focus we successfully chased (keeps aim stable between reveals). */
   private lockedFocusId: string | null = null;
   /**
@@ -80,6 +87,8 @@ export class PixiGraphApp {
   private pressMoved = false;
   /** Last hovered sphere — activation fires on enter, not every move. */
   private hoveredNodeId: string | null = null;
+  /** Client position of the last intentional hover probe. */
+  private lastHoverClient = { x: Number.NaN, y: Number.NaN };
   /**
    * When false (entry preview), ignore pan/zoom/hit-testing and hide the
    * minimap so the field is display-only behind the overlay.
@@ -93,52 +102,10 @@ export class PixiGraphApp {
   onNodeHoverChange: ((nodeId: string | null) => void) | null = null;
   /** Fired on a press (no drag) — hit node id, or null for empty canvas. */
   onNodeSelect: ((nodeId: string | null) => void) | null = null;
-  /** Fired when the user pans/zooms (idle-tour pause). */
+  /** Fired when the user pans/zooms (shared follow pause). */
   onUserCameraInteract: (() => void) | null = null;
-
-  /**
-   * Screen-space circle for the custom cursor when hovering a node.
-   * Coordinates are viewport/client pixels.
-   */
-  queryNodeCursorTarget(
-    clientX: number,
-    clientY: number,
-  ): { id: string; x: number; y: number; radius: number } | null {
-    if (!this.mounted || !this.interactionEnabled || this.pointers.size > 0) {
-      return null;
-    }
-    const point = this.canvasPoint({ clientX, clientY });
-    if (this.minimap.containsScreenPoint(point.x, point.y)) {
-      return null;
-    }
-    const world = screenToWorld(
-      this.camera,
-      point.x,
-      point.y,
-      this.app.renderer.width,
-      this.app.renderer.height,
-    );
-    const hit = this.words.hitTestAt(world.x, world.y);
-    if (!hit) {
-      return null;
-    }
-    const screen = worldToScreen(
-      this.camera,
-      hit.x,
-      hit.y,
-      this.app.renderer.width,
-      this.app.renderer.height,
-    );
-    const rect = this.app.canvas.getBoundingClientRect();
-    const scaleX = rect.width / Math.max(1, this.app.renderer.width);
-    const scaleY = rect.height / Math.max(1, this.app.renderer.height);
-    return {
-      id: hit.id,
-      x: rect.left + screen.x * scaleX,
-      y: rect.top + screen.y * scaleY,
-      radius: hit.radius * this.camera.scale * scaleX,
-    };
-  }
+  /** Shared follow-activity clock with the transcript scrubber. */
+  getFollowActivityAt: (() => number) | null = null;
 
   constructor() {
     this.app = new Application();
@@ -204,6 +171,7 @@ export class PixiGraphApp {
 
   setSnapshot(snapshot: GraphSnapshot): void {
     const prevFocusId = this.snapshot?.focusNodeId ?? null;
+    const prevReady = this.readyNodeCount();
     this.snapshot = snapshot;
 
     const focusAdvanced =
@@ -216,6 +184,13 @@ export class PixiGraphApp {
       // Graph focus moved (ingest/embed/select). Drop the UI pin so
       // home-camera chase can follow. Custom pan is gated by userOverride.
       this.uiFocusId = null;
+    }
+
+    const nextReady = this.readyNodeCount();
+    if (nextReady === 0) {
+      this.invalidateContentAnchor();
+    } else if (prevReady === 0 && nextReady > 0) {
+      this.syncContentAnchor();
     }
   }
 
@@ -232,6 +207,7 @@ export class PixiGraphApp {
       this.overviewMouse.x = 0;
       this.overviewMouse.y = 0;
       window.removeEventListener("pointermove", this.onOverviewPointerMove);
+      this.syncContentAnchor();
       return;
     }
     this.pointers.clear();
@@ -239,6 +215,8 @@ export class PixiGraphApp {
     this.pressOrigin = null;
     this.pressMoved = false;
     this.hoveredNodeId = null;
+    this.lastHoverClient.x = Number.NaN;
+    this.lastHoverClient.y = Number.NaN;
     this.lockedFocusId = null;
     this.uiFocusId = null;
     this.overviewMouse.x = 0;
@@ -251,22 +229,29 @@ export class PixiGraphApp {
 
   resetCameraView(): void {
     this.userOverride = false;
-    this.lastUserInputAt = 0;
+    this.forceFollow = false;
     this.chaseVelX.v = 0;
     this.chaseVelY.v = 0;
     this.chaseVelScale.v = 0;
-    const live = this.liveFocusPoint();
-    if (live) {
-      this.lockedFocusId = live.id;
-      this.camera = this.constrainCamera({
-        x: live.x,
-        y: live.y,
-        scale: CAMERA_FOLLOW.defaultScale,
-      });
+    this.lastUserInputAt = 0;
+    const framed = this.contentFrameCamera();
+    if (framed) {
+      this.camera = framed;
     } else {
-      this.lockedFocusId = null;
-      this.camera = this.constrainCamera(resetCamera());
+      const live = this.liveFocusPoint();
+      if (live) {
+        this.lockedFocusId = live.id;
+        this.camera = this.constrainCamera({
+          x: live.x,
+          y: live.y,
+          scale: CAMERA_FOLLOW.defaultScale,
+        });
+      } else {
+        this.lockedFocusId = null;
+        this.camera = this.constrainCamera(resetCamera());
+      }
     }
+    this.syncContentAnchor();
     this.applyCamera();
   }
 
@@ -285,12 +270,13 @@ export class PixiGraphApp {
       return false;
     }
     this.userOverride = false;
-    this.lastUserInputAt = 0;
-    this.lockedFocusId = null;
-    this.uiFocusId = null;
+    this.forceFollow = false;
     this.chaseVelX.v = 0;
     this.chaseVelY.v = 0;
     this.chaseVelScale.v = 0;
+    this.lastUserInputAt = 0;
+    this.lockedFocusId = null;
+    this.uiFocusId = null;
     this.camera = cameraToFitBounds(
       bounds,
       this.app.renderer.width,
@@ -301,6 +287,7 @@ export class PixiGraphApp {
         maxScale: OVERVIEW_CAMERA.maxScale,
       },
     );
+    this.syncContentAnchor();
     this.applyCamera();
     return true;
   }
@@ -423,6 +410,7 @@ export class PixiGraphApp {
     const wasOverride = this.userOverride;
     this.userOverride = false;
     this.lastUserInputAt = 0;
+    this.forceFollow = true;
     // Only kill momentum when leaving a free-pan. Resetting mid-chase makes
     // retargets hitch; SmoothDamp can redirect an existing velocity cleanly.
     if (wasOverride) {
@@ -438,6 +426,7 @@ export class PixiGraphApp {
   clearFocus(): void {
     this.uiFocusId = null;
     this.lockedFocusId = null;
+    this.forceFollow = false;
     this.chaseVelX.v = 0;
     this.chaseVelY.v = 0;
     this.chaseVelScale.v = 0;
@@ -446,6 +435,163 @@ export class PixiGraphApp {
     if (this.snapshot) {
       this.snapshot = { ...this.snapshot, focusNodeId: null };
     }
+  }
+
+  private contentFrameCamera(): CameraState | null {
+    const bounds = this.computeOverviewBounds();
+    if (!bounds || !this.mounted) {
+      return null;
+    }
+    return cameraToFitBounds(
+      bounds,
+      this.app.renderer.width,
+      this.app.renderer.height,
+      {
+        paddingPx: OVERVIEW_CAMERA.paddingPx,
+        scaleFactor: OVERVIEW_CAMERA.fitScale,
+        maxScale: OVERVIEW_CAMERA.maxScale,
+      },
+    );
+  }
+
+  private readyNodeCount(): number {
+    if (!this.snapshot) {
+      return 0;
+    }
+    let count = 0;
+    for (const node of this.snapshot.nodes) {
+      if (node.embeddingReady) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private contentAnchor(): { x: number; y: number } | null {
+    if (!this.snapshot) {
+      return null;
+    }
+    const display = this.words.getDisplayPositions();
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+    for (const node of this.snapshot.nodes) {
+      if (!node.embeddingReady) {
+        continue;
+      }
+      const pos = display.get(node.id);
+      sumX += pos?.x ?? node.x;
+      sumY += pos?.y ?? node.y;
+      count += 1;
+    }
+    if (count === 0) {
+      return null;
+    }
+    return { x: sumX / count, y: sumY / count };
+  }
+
+  private invalidateContentAnchor(): void {
+    this.lastContentAnchor = null;
+    this.driftFollowPos = null;
+  }
+
+  private syncContentAnchor(): void {
+    this.lastContentAnchor = this.contentAnchor();
+    this.driftFollowPos = { x: this.camera.x, y: this.camera.y };
+  }
+
+  /** Sticky-pan: translate with the field centroid (ease large jumps). */
+  private applyLayoutDriftCompensation(dt: number): void {
+    const anchor = this.contentAnchor();
+    if (!anchor || this.readyNodeCount() === 0) {
+      this.invalidateContentAnchor();
+      return;
+    }
+
+    if (!this.lastContentAnchor) {
+      this.lastContentAnchor = anchor;
+      this.driftFollowPos = { x: this.camera.x, y: this.camera.y };
+      return;
+    }
+
+    const dx = anchor.x - this.lastContentAnchor.x;
+    const dy = anchor.y - this.lastContentAnchor.y;
+    this.lastContentAnchor = anchor;
+
+    if (!this.driftFollowPos) {
+      this.driftFollowPos = { x: this.camera.x, y: this.camera.y };
+    }
+    this.driftFollowPos.x += dx;
+    this.driftFollowPos.y += dy;
+
+    const step = Math.hypot(dx, dy);
+    const catchUp = Math.hypot(
+      this.driftFollowPos.x - this.camera.x,
+      this.driftFollowPos.y - this.camera.y,
+    );
+
+    if (
+      step <= CAMERA_FOLLOW.maxDriftStep &&
+      catchUp <= CAMERA_FOLLOW.maxDriftStep
+    ) {
+      this.camera = {
+        ...this.camera,
+        x: this.driftFollowPos.x,
+        y: this.driftFollowPos.y,
+      };
+      this.chaseVelX.v = 0;
+      this.chaseVelY.v = 0;
+      return;
+    }
+
+    this.camera = {
+      ...this.camera,
+      x: smoothDamp(
+        this.camera.x,
+        this.driftFollowPos.x,
+        this.chaseVelX,
+        CAMERA_FOLLOW.smoothTime,
+        CAMERA_FOLLOW.maxSpeed,
+        dt,
+      ),
+      y: smoothDamp(
+        this.camera.y,
+        this.driftFollowPos.y,
+        this.chaseVelY,
+        CAMERA_FOLLOW.smoothTime,
+        CAMERA_FOLLOW.maxSpeed,
+        dt,
+      ),
+    };
+  }
+
+  private easeCameraTo(target: CameraState, dt: number): void {
+    this.camera = {
+      x: smoothDamp(
+        this.camera.x,
+        target.x,
+        this.chaseVelX,
+        CAMERA_FOLLOW.smoothTime,
+        CAMERA_FOLLOW.maxSpeed,
+        dt,
+      ),
+      y: smoothDamp(
+        this.camera.y,
+        target.y,
+        this.chaseVelY,
+        CAMERA_FOLLOW.smoothTime,
+        CAMERA_FOLLOW.maxSpeed,
+        dt,
+      ),
+      scale: smoothDamp(
+        this.camera.scale,
+        target.scale,
+        this.chaseVelScale,
+        CAMERA_FOLLOW.zoomSmoothTime,
+        2,
+        dt,
+      ),
+    };
   }
 
   /** Min zoom = exactly fit the navigable bounds (same region as the minimap). */
@@ -479,13 +625,15 @@ export class PixiGraphApp {
   /** Clamp after user input and start the idle countdown. */
   private commitCamera(camera: CameraState): void {
     this.userOverride = true;
-    this.lastUserInputAt = performance.now();
+    this.forceFollow = false;
     this.chaseVelX.v = 0;
     this.chaseVelY.v = 0;
     this.chaseVelScale.v = 0;
+    this.lastUserInputAt = performance.now();
     // Never hard-snap from the live view — home chase can sit outside the
     // pan AABB, and the first drag must continue from where the user is.
     this.camera = this.constrainCameraFrom(this.camera, camera);
+    this.syncContentAnchor();
     this.applyCamera();
     this.onUserCameraInteract?.();
   }
@@ -525,6 +673,9 @@ export class PixiGraphApp {
   private liveFocusPoint(): { id: string; x: number; y: number } | null {
     const nodes = this.snapshot?.nodes ?? [];
     const requested = this.uiFocusId ?? this.snapshot?.focusNodeId;
+    if (!requested) {
+      return null;
+    }
     const candidateIds = [requested, this.lockedFocusId].filter(
       (id): id is string => !!id,
     );
@@ -546,6 +697,24 @@ export class PixiGraphApp {
     return null;
   }
 
+  /** Ms since the latest of local camera input and shared transcript activity. */
+  private followIdleMs(): number {
+    const shared = this.getFollowActivityAt?.() ?? 0;
+    const latest = Math.max(this.lastUserInputAt, shared);
+    if (latest <= 0) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return performance.now() - latest;
+  }
+
+  /** Same pause gate as home-camera (for transcript live-edge). */
+  isHomeFollowPaused(): boolean {
+    if (this.forceFollow) {
+      return false;
+    }
+    return this.followIdleMs() < CAMERA_FOLLOW.idleReturnMs;
+  }
+
   private updateHomeCamera(dt: number): void {
     if (!this.interactionEnabled) {
       this.updateOverviewCamera(dt);
@@ -556,78 +725,105 @@ export class PixiGraphApp {
     // Input paths call commitCamera; don't re-clamp here (that teleported).
     if (this.pointers.size > 0 || this.minimapPointerId !== null) {
       this.lastUserInputAt = performance.now();
+      this.syncContentAnchor();
+      if (this.userOverride) {
+        this.onUserCameraInteract?.();
+      }
       return;
+    }
+
+    if (this.forceFollow || this.uiFocusId) {
+      const followPaused =
+        !this.forceFollow && this.followIdleMs() < CAMERA_FOLLOW.idleReturnMs;
+      if (followPaused) {
+        this.syncContentAnchor();
+        return;
+      }
+      const live = this.liveFocusPoint();
+      if (live) {
+        this.syncContentAnchor();
+        this.easeCameraTo(
+          {
+            x: live.x,
+            y: live.y,
+            scale: CAMERA_FOLLOW.defaultScale,
+          },
+          dt,
+        );
+        return;
+      }
     }
 
     if (this.userOverride) {
-      // Soft-pull back if layout bounds drift — hard clamp jerks the view.
-      const limited = this.constrainCamera(this.camera);
-      this.camera = {
-        x: smoothDamp(
-          this.camera.x,
-          limited.x,
-          this.chaseVelX,
-          0.22,
-          CAMERA_FOLLOW.maxSpeed,
-          dt,
-        ),
-        y: smoothDamp(
-          this.camera.y,
-          limited.y,
-          this.chaseVelY,
-          0.22,
-          CAMERA_FOLLOW.maxSpeed,
-          dt,
-        ),
-        scale: smoothDamp(
-          this.camera.scale,
-          limited.scale,
-          this.chaseVelScale,
-          0.22,
-          2,
-          dt,
-        ),
-      };
-      const idleMs = performance.now() - this.lastUserInputAt;
-      if (idleMs < CAMERA_FOLLOW.idleReturnMs) {
-        return;
-      }
-      this.userOverride = false;
-      this.chaseVelX.v = 0;
-      this.chaseVelY.v = 0;
-      this.chaseVelScale.v = 0;
-    }
-
-    const live = this.liveFocusPoint();
-    if (!live) {
+      this.applyLayoutDriftCompensation(dt);
+      this.softPullCameraInsideBounds(dt);
       return;
     }
 
-    // Chase the live node (not a clamped home pose). When the field still
-    // fits the viewport, clamping collapses every target to center and new
-    // words never pull the camera. Pan takeovers use clampCameraPan instead.
+    const framed = this.contentFrameCamera();
+    if (framed) {
+      this.easeCameraTo(framed, dt);
+    }
+    this.syncContentAnchor();
+  }
+
+  /** Ease back inside pan limits; don't raise zoom when fit-min increases. */
+  private softPullCameraInsideBounds(dt: number): void {
+    const bounds = this.navigableBounds();
+    const width = this.app.renderer.width;
+    const height = this.app.renderer.height;
+    const { max } = this.scaleRange();
+    let targetX = this.camera.x;
+    let targetY = this.camera.y;
+    const targetScale = Math.min(max, this.camera.scale);
+
+    if (bounds) {
+      const halfW = width / (2 * Math.max(1e-6, this.camera.scale));
+      const halfH = height / (2 * Math.max(1e-6, this.camera.scale));
+      const limited = clampCameraToContent(
+        this.camera,
+        bounds,
+        { width, height },
+        0,
+      );
+      if (bounds.maxX - bounds.minX > halfW * 2) {
+        targetX = limited.x;
+      }
+      if (bounds.maxY - bounds.minY > halfH * 2) {
+        targetY = limited.y;
+      }
+    }
+
+    if (
+      targetX === this.camera.x &&
+      targetY === this.camera.y &&
+      targetScale === this.camera.scale
+    ) {
+      return;
+    }
+
     this.camera = {
       x: smoothDamp(
         this.camera.x,
-        live.x,
+        targetX,
         this.chaseVelX,
-        CAMERA_FOLLOW.smoothTime,
+        0.22,
         CAMERA_FOLLOW.maxSpeed,
         dt,
       ),
       y: smoothDamp(
         this.camera.y,
-        live.y,
+        targetY,
         this.chaseVelY,
-        CAMERA_FOLLOW.smoothTime,
+        0.22,
         CAMERA_FOLLOW.maxSpeed,
         dt,
       ),
       scale: smoothDamp(
         this.camera.scale,
-        CAMERA_FOLLOW.defaultScale,
+        targetScale,
         this.chaseVelScale,
-        CAMERA_FOLLOW.zoomSmoothTime,
+        0.22,
         2,
         dt,
       ),
@@ -696,6 +892,15 @@ export class PixiGraphApp {
       x: ((event.clientX - rect.left) / width) * this.app.renderer.width,
       y: ((event.clientY - rect.top) / height) * this.app.renderer.height,
     };
+  }
+
+  /** True when the topmost element under the pointer is the field canvas. */
+  private isPointerOverCanvas(clientX: number, clientY: number): boolean {
+    const top = document.elementFromPoint(clientX, clientY);
+    if (!(top instanceof Element)) {
+      return false;
+    }
+    return top === this.app.canvas || !!top.closest(".canvas-host");
   }
 
   private focusFromMinimap(event: {
@@ -814,7 +1019,12 @@ export class PixiGraphApp {
       this.pressOrigin = null;
       this.pressMoved = false;
 
-      if (wasClick) {
+      if (
+        wasClick &&
+        // Pointer capture can deliver the up over UI chrome; don't select
+        // a node sitting under the transcript / detail panel.
+        this.isPointerOverCanvas(event.clientX, event.clientY)
+      ) {
         const point = this.canvasPoint(event);
         const world = screenToWorld(
           this.camera,
@@ -842,6 +1052,8 @@ export class PixiGraphApp {
   };
 
   private onPointerLeave = (): void => {
+    this.lastHoverClient.x = Number.NaN;
+    this.lastHoverClient.y = Number.NaN;
     if (this.hoveredNodeId !== null) {
       this.hoveredNodeId = null;
       this.onNodeHoverChange?.(null);
@@ -849,6 +1061,18 @@ export class PixiGraphApp {
   };
 
   private updateHoverCursor(event: PointerEvent): void {
+    const dx = event.clientX - this.lastHoverClient.x;
+    const dy = event.clientY - this.lastHoverClient.y;
+    const clientTravel = Number.isFinite(this.lastHoverClient.x)
+      ? Math.hypot(dx, dy)
+      : Infinity;
+    const eventTravel = Math.hypot(event.movementX, event.movementY);
+    if (clientTravel < HOVER_INTENT_PX && eventTravel < HOVER_INTENT_PX) {
+      return;
+    }
+    this.lastHoverClient.x = event.clientX;
+    this.lastHoverClient.y = event.clientY;
+
     const point = this.canvasPoint(event);
     if (this.minimap.containsScreenPoint(point.x, point.y)) {
       if (this.hoveredNodeId !== null) {

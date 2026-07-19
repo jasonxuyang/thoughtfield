@@ -67,6 +67,23 @@ export const VIZ_EDGE_CONFIG = {
   activeMinWeight: 0.2,
   /** Endpoint activation considered "hot" for the active threshold. */
   activationPriority: 0.08,
+  /**
+   * Soft target for cold/medium strands shipped to the canvas.
+   * Strong and hot edges can exceed this — see alwaysRenderWeight / strongParity.
+   */
+  softMaxRenderEdges: 120,
+  /**
+   * Absolute floor: edges at or above this weight always ship
+   * (subject only to hardSafetyMaxRenderEdges).
+   */
+  alwaysRenderWeight: 0.55,
+  /**
+   * Relative floor vs the heaviest eligible edge. Keeps near-ties with the
+   * strongest link even when many edges are dense and strong.
+   */
+  strongParity: 0.85,
+  /** Pathological denseness guard — not a normal trim. */
+  hardSafetyMaxRenderEdges: 400,
 };
 
 export const COMMUNITY_CONFIG = {
@@ -105,35 +122,18 @@ export const LAYOUT_CONFIG = {
   maxVelocity: 12,
 };
 
-/**
- * Default viewport: last focused node at `defaultScale`.
- * User pan/zoom is free; after idle, camera eases back home.
- * Position uses SmoothDamp so layout motion and focus switches stay fluid.
- */
+/** Idle field-fit, focus chase, and sticky-pan drift compensation. */
 export const CAMERA_FOLLOW = {
-  /** Approximate time to reach the focus target (seconds). */
+  /** Seconds to ease toward focus / fit. */
   smoothTime: 0.45,
-  /** Cap on chase speed so focus teleports don't whip the view. */
   maxSpeed: 720,
-  /** Zoom ease time toward defaultScale. */
   zoomSmoothTime: 0.55,
-  /** Zoom level for the default (home) viewport — lower = more zoomed out. */
+  /** Zoom when focusing a single node. */
   defaultScale: 1.5,
-  /** Ms without pan/zoom before returning to the default viewport. */
+  /** Pause node-focus chase after pan/zoom/scrub. */
   idleReturnMs: 2_800,
-};
-
-/**
- * Ambient graph tour when nothing is selected and the user has been idle
- * (no hover, transcript scroll, or camera drag).
- */
-export const IDLE_TOUR_CONFIG = {
-  /** Quiet time before the tour starts. */
-  idleStartMs: 4_000,
-  /** Dwell on each node before advancing. */
-  stepMs: 1_850,
-  /** Extra pause after finishing a full loop. */
-  loopPauseMs: 2_600,
+  /** Sticky-pan: 1:1 below this centroid step; ease above it. */
+  maxDriftStep: 48,
 };
 
 /** Entry-preview camera: fit all communities, then peek toward the cursor. */

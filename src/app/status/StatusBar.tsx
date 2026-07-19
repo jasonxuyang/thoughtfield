@@ -15,10 +15,22 @@ import type { FocusLockTarget } from "../controls/CustomCursor";
 import { HudTooltip } from "../controls/HudTooltip";
 import { RecordButton } from "../controls/RecordButton";
 
-/** Matches `.transcript-text` gap / padding-inline (0.45rem / 0.5rem / 1.25rem at 16px). */
+/** Matches `.transcript-text` gap / the body mask fade (0.45rem / 1.25rem at 16px). */
 const TRANSCRIPT_WORD_GAP_PX = 7;
-const TRANSCRIPT_PADDING_START_PX = 8;
+const TRANSCRIPT_PADDING_START_PX = 20;
 const TRANSCRIPT_PADDING_END_PX = 20;
+/** Extra inset for scrollToIndex align:"auto" so words clear the side fades. */
+const TRANSCRIPT_SCROLL_PADDING_PX = 20;
+
+/** Pin the strip to the trailing edge (past the last word + end fade padding). */
+function scrollTranscriptBodyToEnd(body: HTMLElement): void {
+  body.scrollLeft = Math.max(0, body.scrollWidth - body.clientWidth);
+}
+/**
+ * Live embeds arrive in small batches (and snapshots can coalesce a few).
+ * Hydrate / preview jumps are much larger — skip auto-scroll for those.
+ */
+const LIVE_EDGE_REVEAL_MAX = 12;
 /** Ignore scroll events from our own scrollToIndex for this long. */
 const PROGRAMMATIC_SCROLL_GUARD_MS = 1_400;
 /** Matches CustomCursor BUTTON_PAD so keyboard lock outlines the same way. */
@@ -56,6 +68,31 @@ type TranscriptToken = {
 
 type BlockPhase = "clear" | "enter" | "hold" | "exit";
 
+/**
+ * Align a (possibly cached) block phase with the current redacted flag.
+ * Virtualization can unmount a word while it is still blocked; when it
+ * remounts after the occurrence has been revealed, the redacted→false
+ * transition never fires, so we must not restore enter/hold.
+ */
+function reconcileBlockPhase(
+  phase: BlockPhase,
+  redacted: boolean,
+  reducedMotion: boolean,
+): BlockPhase {
+  if (redacted) {
+    if (phase === "clear" || phase === "exit") {
+      return reducedMotion ? "hold" : "enter";
+    }
+    return phase;
+  }
+  // Revealed: drop immediately under reduced motion (no animationend),
+  // otherwise play/continue the exit slide.
+  if (phase === "clear" || reducedMotion) {
+    return "clear";
+  }
+  return "exit";
+}
+
 function tokenize(text: string): string[] {
   return text.trim().length === 0 ? [] : text.trim().split(/\s+/);
 }
@@ -63,16 +100,22 @@ function tokenize(text: string): string[] {
 function buildTokens(
   committed: string,
   pending: string,
-  canvasLabels: ReadonlySet<string>,
+  revealedOccurrenceCount: number,
 ): TranscriptToken[] {
   const tokens: TranscriptToken[] = [];
   // Absolute indices stay stable when a pending word commits.
   let index = 0;
+  // Graph occurrences only — stopwords / fillers are not indexed here.
+  let occurrenceIndex = 0;
 
   for (const raw of tokenize(committed)) {
     const normalized = normalizeToken(raw);
-    // Graph words stay redacted until their sphere is on the canvas.
-    const redacted = normalized !== null && !canvasLabels.has(normalized);
+    // Reveal in speech order: occurrence N waits until 0..N-1 are embedded.
+    let redacted = true;
+    if (normalized !== null) {
+      redacted = occurrenceIndex >= revealedOccurrenceCount;
+      occurrenceIndex += 1;
+    }
     tokens.push({
       key: `t-${index}`,
       raw,
@@ -118,6 +161,24 @@ function buildTokens(
   }
 
   return tokens;
+}
+
+/** Token index for graph occurrence N (fillers / stopwords are skipped). */
+function tokenIndexForOccurrence(
+  tokens: readonly TranscriptToken[],
+  occurrenceIndex: number,
+): number {
+  let seen = 0;
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (tokens[i]?.label === null) {
+      continue;
+    }
+    if (seen === occurrenceIndex) {
+      return i;
+    }
+    seen += 1;
+  }
+  return -1;
 }
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
@@ -172,11 +233,17 @@ function TranscriptWord({
   onFocusedElement?: (element: HTMLElement) => void;
 }) {
   const [phase, setPhase] = useState<BlockPhase>(() => {
+    const reducedMotion = prefersReducedMotion();
     const cached = phaseCache.get(tokenKey);
-    if (cached !== undefined) {
-      return cached;
-    }
-    return redacted ? (prefersReducedMotion() ? "hold" : "enter") : "clear";
+    const initial =
+      cached !== undefined
+        ? cached
+        : redacted
+          ? reducedMotion
+            ? "hold"
+            : "enter"
+          : "clear";
+    return reconcileBlockPhase(initial, redacted, reducedMotion);
   });
   const prevRedactedRef = useRef(redacted);
   const elementRef = useRef<HTMLSpanElement | null>(null);
@@ -188,12 +255,18 @@ function TranscriptWord({
   useLayoutEffect(() => {
     const wasRedacted = prevRedactedRef.current;
     prevRedactedRef.current = redacted;
+    const reducedMotion = prefersReducedMotion();
 
     if (wasRedacted === redacted) {
+      // Remount / cache restore can leave phase out of sync with redacted
+      // without a prop edge (see reconcileBlockPhase).
+      setPhase((current) =>
+        reconcileBlockPhase(current, redacted, reducedMotion),
+      );
       return;
     }
 
-    if (prefersReducedMotion()) {
+    if (reducedMotion) {
       setPhase(redacted ? "hold" : "clear");
       return;
     }
@@ -322,7 +395,7 @@ export function TranscriptPanel({
   committed,
   pending,
   typedPending,
-  canvasLabels,
+  revealedOccurrenceCount,
   focusedLabel,
   listening,
   ready,
@@ -335,6 +408,8 @@ export function TranscriptPanel({
   onActivateLabel,
   onSelectLabel,
   onUserScrollActivity,
+  getFollowActivityAt,
+  isHomeFollowPaused,
   onCursorLockRelease,
   activationSinkRef,
   scrollToLabelRef,
@@ -344,7 +419,8 @@ export function TranscriptPanel({
   committed: string;
   pending: string;
   typedPending: string;
-  canvasLabels: ReadonlySet<string>;
+  /** Contiguous embedded graph-occurrence prefix (speech-order reveal). */
+  revealedOccurrenceCount: number;
   focusedLabel: string | null;
   listening: boolean;
   ready: boolean;
@@ -356,31 +432,55 @@ export function TranscriptPanel({
   onTrySample: () => void;
   onActivateLabel: (label: string) => void;
   onSelectLabel: (label: string) => void;
-  /** User scrolled the strip — pauses ambient idle tour. */
+  /** User scrolled the strip — pauses shared canvas/transcript follow. */
   onUserScrollActivity?: () => void;
-  /** Pointer cleared a transcript cursor lock — pause idle tour. */
+  /**
+   * Shared follow clock with the canvas. Canvas pan/zoom bumps this so the
+   * transcript doesn't return-to-focus until both sides have been idle.
+   */
+  getFollowActivityAt?: () => number;
+  /**
+   * Same pause gate as canvas home-camera (includes forceFollow). Live-edge
+   * transcript chase should only run when this is false.
+   */
+  isHomeFollowPaused?: () => boolean;
+  /** Pointer cleared a transcript cursor lock — pause shared follow. */
   onCursorLockRelease?: () => void;
   activationSinkRef: MutableRefObject<
     ((activations: ReadonlyMap<string, number>) => void) | null
   >;
   scrollToLabelRef: MutableRefObject<
-    ((label: string, options?: { lockCursor?: boolean }) => void) | null
+    ((
+      label: string,
+      options?: { lockCursor?: boolean; focus?: boolean },
+    ) => void) | null
   >;
   /** Lets the custom cursor outline the keyboard-focused transcript word. */
   focusLockTargetGetterRef: MutableRefObject<
     (() => FocusLockTarget | null) | null
   >;
-  /** Imperative unlock (e.g. idle tour stopped). */
+  /** Imperative unlock (e.g. Escape / programmatic clear). */
   releaseCursorLockRef?: MutableRefObject<(() => void) | null>;
 }) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const pasteRef = useRef<HTMLInputElement | null>(null);
-  const typeInputRef = useRef<HTMLInputElement | null>(null);
+  const scrubTrackRef = useRef<HTMLDivElement | null>(null);
+  const scrubbingRef = useRef(false);
+  /** Active scrub pointer id — window listeners end the drag even if capture drops. */
+  const scrubPointerIdRef = useRef<number | null>(null);
+  const scrubWindowCleanupRef = useRef<(() => void) | null>(null);
+  const pasteRef = useRef<HTMLTextAreaElement | null>(null);
+  const typeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const typingComposingRef = useRef(false);
   const pendingScrollToEndRef = useRef(false);
   const phaseCacheRef = useRef(new Map<string, BlockPhase>());
   const prevTokenCountRef = useRef(0);
   const hoveredLabelRef = useRef<string | null>(null);
+  /** Scroll scrubber: progress 0–1 along the overflow, only when content overflows. */
+  const [scrub, setScrub] = useState({ progress: 0, canScrub: false });
+  /** Hover preview along the scrub (null when pointer is away). */
+  const [scrubGhost, setScrubGhost] = useState<number | null>(null);
+  /** Keep the hover-only scrub visible while dragging outside the panel. */
+  const [scrubActive, setScrubActive] = useState(false);
   /**
    * Which transcript occurrence is focused. Index (not just label) matters
    * because the strip is virtualized and the same word can appear twice.
@@ -402,16 +502,24 @@ export function TranscriptPanel({
    */
   const userScrollOverrideRef = useRef(false);
   const lastUserScrollAtRef = useRef(0);
+  /** Pointer is over the transcript strip — suppress live-edge auto-scroll. */
+  const pointerOverTranscriptRef = useRef(false);
   /** Ignore scroll events until this timestamp (programmatic scrollToIndex). */
   const programmaticScrollUntilRef = useRef(0);
-  /** Prior canvas labels — live-edge scroll only when exactly one node lands. */
-  const prevCanvasLabelsRef = useRef<ReadonlySet<string>>(new Set());
+  /** Prior reveal prefix — live-edge scroll only when a small batch lands. */
+  const prevRevealedCountRef = useRef(0);
+  /**
+   * Occurrence to chase once shared follow idle clears (canvas home-chase
+   * resumes every frame; transcript only gets one shot per reveal otherwise).
+   */
+  const pendingLiveScrollOccurrenceRef = useRef<number | null>(null);
   const wordElsRef = useRef(new Map<string, Set<HTMLElement>>());
   const activationsRef = useRef<ReadonlyMap<string, number>>(new Map());
   const [draft, setDraft] = useState("");
-  const tokens = buildTokens(committed, pending, canvasLabels);
+  const tokens = buildTokens(committed, pending, revealedOccurrenceCount);
   const hasTranscript = tokens.length > 0;
   const isTyping = typedPending.length > 0;
+  const hasTypedDraft = typedPending.trim().length > 0;
   const showEntry = !hasTranscript && !listening && !isTyping;
 
   if (tokens.length < prevTokenCountRef.current) {
@@ -462,6 +570,9 @@ export function TranscriptPanel({
   });
 
   const handleSelect = useEffectEvent((label: string, index: number) => {
+    // Intentional click — cancel free-scroll override so we stay with focus.
+    userScrollOverrideRef.current = false;
+    lastUserScrollAtRef.current = 0;
     setFocusedIndex(index);
     onSelectLabel(label);
   });
@@ -474,15 +585,207 @@ export function TranscriptPanel({
     gap: TRANSCRIPT_WORD_GAP_PX,
     paddingStart: TRANSCRIPT_PADDING_START_PX,
     paddingEnd: TRANSCRIPT_PADDING_END_PX,
+    scrollPaddingStart: TRANSCRIPT_SCROLL_PADDING_PX,
+    scrollPaddingEnd: TRANSCRIPT_SCROLL_PADDING_PX,
     overscan: 12,
     getItemKey: (index) => tokens[index]?.key ?? index,
   });
 
-  const markUserScroll = useEffectEvent(() => {
+  const markTranscriptActivity = useEffectEvent(() => {
     userScrollOverrideRef.current = true;
     lastUserScrollAtRef.current = performance.now();
     onUserScrollActivity?.();
   });
+
+  /** Latest of local scrub/scroll and shared canvas follow activity. */
+  const followIdleMs = useEffectEvent((): number => {
+    const shared = getFollowActivityAt?.() ?? 0;
+    const latest = Math.max(lastUserScrollAtRef.current, shared);
+    if (latest <= 0) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return performance.now() - latest;
+  });
+
+  const syncScrubFromScroll = useEffectEvent(() => {
+    const body = bodyRef.current;
+    if (!body) {
+      setScrub((previous) =>
+        previous.canScrub || previous.progress !== 0
+          ? { progress: 0, canScrub: false }
+          : previous,
+      );
+      return;
+    }
+    const maxScroll = body.scrollWidth - body.clientWidth;
+    const canScrub = maxScroll > 1;
+    const progress = canScrub
+      ? Math.min(1, Math.max(0, body.scrollLeft / maxScroll))
+      : 0;
+    setScrub((previous) => {
+      if (
+        previous.canScrub === canScrub &&
+        Math.abs(previous.progress - progress) < 0.0005
+      ) {
+        return previous;
+      }
+      return { progress, canScrub };
+    });
+  });
+
+  const scrubProgressFromClientX = useEffectEvent(
+    (clientX: number): number | null => {
+      const track = scrubTrackRef.current;
+      if (!track) {
+        return null;
+      }
+      const rect = track.getBoundingClientRect();
+      if (rect.width <= 0) {
+        return null;
+      }
+      return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    },
+  );
+
+  const scrubToClientX = useEffectEvent((clientX: number) => {
+    const body = bodyRef.current;
+    if (!body) {
+      return;
+    }
+    const maxScroll = body.scrollWidth - body.clientWidth;
+    if (maxScroll <= 1) {
+      return;
+    }
+    const t = scrubProgressFromClientX(clientX);
+    if (t === null) {
+      return;
+    }
+    body.scrollLeft = t * maxScroll;
+    markTranscriptActivity();
+    setScrub({ progress: t, canScrub: true });
+  });
+
+  const endScrubGesture = useEffectEvent(
+    (clientX: number, clientY: number) => {
+      if (!scrubbingRef.current && scrubPointerIdRef.current === null) {
+        return;
+      }
+      scrubbingRef.current = false;
+      scrubPointerIdRef.current = null;
+      const track = scrubTrackRef.current;
+      track?.classList.remove("is-active");
+      setScrubActive(false);
+
+      const under = document.elementFromPoint(clientX, clientY);
+      const overScrub = !!under?.closest(".transcript-scrub");
+      pointerOverTranscriptRef.current = !!under?.closest(".transcript-scroll");
+      if (overScrub) {
+        setScrubGhost(scrubProgressFromClientX(clientX));
+      } else {
+        setScrubGhost(null);
+      }
+    },
+  );
+
+  const beginScrubGesture = useEffectEvent(
+    (track: HTMLElement, pointerId: number, clientX: number) => {
+      scrubWindowCleanupRef.current?.();
+
+      scrubbingRef.current = true;
+      scrubPointerIdRef.current = pointerId;
+      // Sync before React paint so the custom cursor can lock immediately.
+      track.classList.add("is-active");
+      setScrubActive(true);
+      pointerOverTranscriptRef.current = true;
+      scrubToClientX(clientX);
+      setScrubGhost(scrubProgressFromClientX(clientX));
+
+      try {
+        track.setPointerCapture(pointerId);
+      } catch {
+        // Capture is best-effort; window listeners still own the gesture.
+      }
+
+      let finished = false;
+      const finish = (event: PointerEvent) => {
+        if (finished || event.pointerId !== pointerId) {
+          return;
+        }
+        finished = true;
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onEnd);
+        window.removeEventListener("pointercancel", onEnd);
+        track.removeEventListener("lostpointercapture", onLostCapture);
+        scrubWindowCleanupRef.current = null;
+        if (track.hasPointerCapture(pointerId)) {
+          try {
+            track.releasePointerCapture(pointerId);
+          } catch {
+            // Already released.
+          }
+        }
+        endScrubGesture(event.clientX, event.clientY);
+      };
+      const onMove = (event: PointerEvent) => {
+        if (event.pointerId !== pointerId || !scrubbingRef.current) {
+          return;
+        }
+        scrubToClientX(event.clientX);
+        setScrubGhost(scrubProgressFromClientX(event.clientX));
+      };
+      const onEnd = (event: PointerEvent) => {
+        finish(event);
+      };
+      const onLostCapture = (event: PointerEvent) => {
+        // Only end if this was our capture and we haven't already finished.
+        if (event.pointerId !== pointerId || finished) {
+          return;
+        }
+        // A later setPointerCapture elsewhere — still end our scrub session.
+        finish(event);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onEnd);
+      window.addEventListener("pointercancel", onEnd);
+      track.addEventListener("lostpointercapture", onLostCapture);
+      scrubWindowCleanupRef.current = () => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onEnd);
+        window.removeEventListener("pointercancel", onEnd);
+        track.removeEventListener("lostpointercapture", onLostCapture);
+        scrubWindowCleanupRef.current = null;
+        endScrubGesture(clientX, 0);
+      };
+    },
+  );
+
+  /**
+   * Hovering, focus inspection, or canvas follow-pause — don't yank the strip.
+   * Uses the same pause gate as home-camera (incl. forceFollow) so both
+   * viewports chase in lockstep.
+   * Focus inspection is optional so typed commits can still clear focus + chase.
+   */
+  const isLiveEdgeAutoScrollSuppressed = useEffectEvent(
+    (options?: { includeFocus?: boolean }): boolean => {
+      if (pointerOverTranscriptRef.current) {
+        return true;
+      }
+      if (options?.includeFocus !== false) {
+        if (focusedLabel !== null || focusedIndexRef.current !== null) {
+          return true;
+        }
+      }
+      if (isHomeFollowPaused) {
+        return isHomeFollowPaused();
+      }
+      return followIdleMs() < CAMERA_FOLLOW.idleReturnMs;
+    },
+  );
 
   /**
    * Scroll a token into view. Instant jumps re-align after measure; smooth
@@ -527,8 +830,36 @@ export function TranscriptPanel({
     },
   );
 
+  /**
+   * Scroll to a revealed graph occurrence, or defer until canvas follow resumes.
+   * Instant scroll + remeasure — smooth virtualizer jumps often no-op on estimates.
+   */
+  const chaseRevealedOccurrence = useEffectEvent((occurrenceIndex: number) => {
+    // Don't fight pinned inspection — drop any deferred live chase.
+    if (focusedLabel !== null || focusedIndexRef.current !== null) {
+      pendingLiveScrollOccurrenceRef.current = null;
+      return;
+    }
+    if (isLiveEdgeAutoScrollSuppressed({ includeFocus: false })) {
+      pendingLiveScrollOccurrenceRef.current = occurrenceIndex;
+      return;
+    }
+    const targetIndex = tokenIndexForOccurrence(tokens, occurrenceIndex);
+    if (targetIndex < 0) {
+      return;
+    }
+    pendingLiveScrollOccurrenceRef.current = null;
+    scrollToTokenIndex(targetIndex, {
+      align: "end",
+      behavior: "auto",
+    });
+  });
+
   const scrollToLabel = useEffectEvent(
-    (label: string, options?: { lockCursor?: boolean }) => {
+    (
+      label: string,
+      options?: { lockCursor?: boolean; focus?: boolean },
+    ) => {
       let index = -1;
       for (let i = tokens.length - 1; i >= 0; i -= 1) {
         const token = tokens[i];
@@ -540,14 +871,18 @@ export function TranscriptPanel({
       if (index < 0) {
         return;
       }
-      focusedIndexRef.current = index;
-      setFocusedIndex(index);
+      // focus:false — scroll only, no highlight / cursor steal.
+      if (options?.focus !== false) {
+        focusedIndexRef.current = index;
+        setFocusedIndex(index);
+      }
       if (options?.lockCursor) {
         cursorFocusLockRef.current = true;
         cursorLockOriginRef.current = null;
       }
+      // Node click: only nudge into view — don't yank the word to center.
       scrollToTokenIndex(index, {
-        align: "center",
+        align: "auto",
         behavior: prefersReducedMotion() ? "auto" : "smooth",
       });
     },
@@ -621,7 +956,6 @@ export function TranscriptPanel({
       // Sync immediately — CustomCursor reads this ref before React re-renders.
       focusedIndexRef.current = index;
       setFocusedIndex(index);
-      // Select first: selectNode → stopIdleTour may clear a prior tour lock.
       onSelectLabel(label);
       cursorFocusLockRef.current = true;
       cursorLockOriginRef.current = null;
@@ -734,8 +1068,7 @@ export function TranscriptPanel({
       if (event.metaKey || event.ctrlKey || event.altKey) {
         return;
       }
-      // Draft caret owns arrows only while a word is in progress. The hidden
-      // type input often keeps focus after commit — don't let that block nav.
+      // Draft caret owns arrows only while text is in progress.
       if (typedPending.length > 0) {
         return;
       }
@@ -805,7 +1138,7 @@ export function TranscriptPanel({
 
   useEffect(() => {
     if (focusedLabel === null) {
-      // Keep idle-tour / transient cursor locks; only clear when unlocked.
+      // Keep transient cursor locks; only clear when unlocked.
       if (!cursorFocusLockRef.current) {
         setFocusedIndex(null);
         userScrollOverrideRef.current = false;
@@ -828,7 +1161,7 @@ export function TranscriptPanel({
       }
       return null;
     });
-  }, [focusedLabel, committed, pending, canvasLabels]);
+  }, [focusedLabel, committed, pending, revealedOccurrenceCount]);
 
   useEffect(() => {
     scrollToLabelRef.current = scrollToLabel;
@@ -840,30 +1173,22 @@ export function TranscriptPanel({
   }, [scrollToLabelRef]);
 
   useEffect(() => {
-    const prev = prevCanvasLabelsRef.current;
-    let added = 0;
-    for (const label of canvasLabels) {
-      if (!prev.has(label)) {
-        added += 1;
-        if (added > 1) {
-          break;
-        }
-      }
-    }
-    prevCanvasLabelsRef.current = canvasLabels;
+    const prev = prevRevealedCountRef.current;
+    const added = revealedOccurrenceCount - prev;
+    prevRevealedCountRef.current = revealedOccurrenceCount;
 
-    // Follow the live edge only when a single new sphere appears — not when
-    // preview / restore hydrates many labels, or when transcript text grows.
-    if (added !== 1 || tokens.length === 0) {
+    // Chase the newly revealed occurrence (same word the camera focuses), not
+    // the strip end / pending ASR block. Small batches only — skip hydrate jumps.
+    if (added > LIVE_EDGE_REVEAL_MAX) {
+      pendingLiveScrollOccurrenceRef.current = null;
       return;
     }
-    // Don't yank the strip to the live edge while inspecting a word.
-    if (focusedLabel !== null || focusedIndexRef.current !== null) {
+    if (added < 1 || tokens.length === 0) {
       return;
     }
-    programmaticScrollUntilRef.current = performance.now() + 120;
-    virtualizer.scrollToIndex(tokens.length - 1, { align: "end" });
-  }, [canvasLabels, tokens.length, virtualizer, focusedLabel]);
+    // Latest processed occurrence in this reveal (matches focusNodeId = last apply).
+    chaseRevealedOccurrence(revealedOccurrenceCount - 1);
+  }, [revealedOccurrenceCount, tokens.length, virtualizer, focusedLabel]);
 
   // Free-scroll the strip; after idle, ease back to the focused word
   // (mirrors canvas CAMERA_FOLLOW.idleReturnMs).
@@ -873,27 +1198,63 @@ export function TranscriptPanel({
       return;
     }
 
+    const onPointerEnter = () => {
+      pointerOverTranscriptRef.current = true;
+      markTranscriptActivity();
+    };
+    const onPointerLeave = () => {
+      // Drop hover suppress immediately; idle timer still covers recent scrubbing.
+      pointerOverTranscriptRef.current = false;
+    };
+    const onPointerDown = () => {
+      markTranscriptActivity();
+    };
     const onWheel = () => {
-      markUserScroll();
+      markTranscriptActivity();
     };
     const onTouchMove = () => {
-      markUserScroll();
+      markTranscriptActivity();
     };
     const onScroll = () => {
+      syncScrubFromScroll();
       // Smooth programmatic scrolls emit many events; keep the guard alive
-      // until they settle so idle-tour / focus chase don't look like user input.
-      if (performance.now() < programmaticScrollUntilRef.current) {
-        programmaticScrollUntilRef.current = performance.now() + 200;
+      // until they settle so focus chase doesn't look like user input.
+      if (
+        scrubbingRef.current ||
+        performance.now() < programmaticScrollUntilRef.current
+      ) {
+        if (!scrubbingRef.current) {
+          programmaticScrollUntilRef.current = performance.now() + 200;
+        }
         return;
       }
-      markUserScroll();
+      markTranscriptActivity();
     };
 
+    el.addEventListener("pointerenter", onPointerEnter);
+    el.addEventListener("pointerleave", onPointerLeave);
+    el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
 
+    syncScrubFromScroll();
+    const resizeObserver = new ResizeObserver(() => {
+      syncScrubFromScroll();
+    });
+    resizeObserver.observe(el);
+
     const idleTimer = window.setInterval(() => {
+      // Held scrub — keep the shared follow clock alive for the whole press.
+      if (scrubbingRef.current) {
+        markTranscriptActivity();
+        return;
+      }
+      // Canvas home-chase resumes after idle; flush a deferred reveal chase too.
+      const pendingLive = pendingLiveScrollOccurrenceRef.current;
+      if (pendingLive !== null) {
+        chaseRevealedOccurrence(pendingLive);
+      }
       if (!userScrollOverrideRef.current) {
         return;
       }
@@ -902,8 +1263,8 @@ export function TranscriptPanel({
         userScrollOverrideRef.current = false;
         return;
       }
-      const idleMs = performance.now() - lastUserScrollAtRef.current;
-      if (idleMs < CAMERA_FOLLOW.idleReturnMs) {
+      // Shared with canvas home-chase — both resume only after the same idle.
+      if (followIdleMs() < CAMERA_FOLLOW.idleReturnMs) {
         return;
       }
       scrollToTokenIndex(index, {
@@ -913,12 +1274,33 @@ export function TranscriptPanel({
     }, 200);
 
     return () => {
+      el.removeEventListener("pointerenter", onPointerEnter);
+      el.removeEventListener("pointerleave", onPointerLeave);
+      el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("scroll", onScroll);
+      resizeObserver.disconnect();
       window.clearInterval(idleTimer);
     };
   }, [hasTranscript]);
+
+  // Drop an in-flight scrub if the panel unmounts mid-drag.
+  useEffect(() => {
+    return () => {
+      scrubWindowCleanupRef.current?.();
+    };
+  }, []);
+
+  // Content width changes (new words / measure) — keep the scrub thumb honest.
+  useLayoutEffect(() => {
+    if (!hasTranscript) {
+      setScrub({ progress: 0, canScrub: false });
+      setScrubGhost(null);
+      return;
+    }
+    syncScrubFromScroll();
+  }, [hasTranscript, tokens.length, virtualizer.getTotalSize()]);
 
   useEffect(() => {
     if (!showEntry) {
@@ -941,21 +1323,24 @@ export function TranscriptPanel({
     if (tokens.length === 0) {
       return;
     }
+    // Respect an in-progress read / scrub of earlier words.
+    if (isLiveEdgeAutoScrollSuppressed({ includeFocus: false })) {
+      return;
+    }
     setFocusedIndex(null);
     focusedIndexRef.current = null;
     cursorFocusLockRef.current = false;
     userScrollOverrideRef.current = false;
     programmaticScrollUntilRef.current = performance.now() + 200;
     const body = bodyRef.current;
-    virtualizer.scrollToIndex(tokens.length - 1, {
-      align: "end",
-      behavior: "auto",
-    });
-    // After measure, pin the scrollport to the true trailing edge.
+    if (body) {
+      scrollTranscriptBodyToEnd(body);
+    }
+    // After measure, pin again so end padding clears the right fade.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (body) {
-          body.scrollLeft = Math.max(0, body.scrollWidth - body.clientWidth);
+          scrollTranscriptBodyToEnd(body);
         }
       });
     });
@@ -981,33 +1366,8 @@ export function TranscriptPanel({
     if (!pasted) {
       return;
     }
-    // Space / newline ends a word; keep a trailing partial in the draft line.
-    const endsWithBreak = /\s$/.test(pasted);
-    const parts = pasted.replace(/\r\n/g, "\n").split(/\s+/).filter(Boolean);
-    if (parts.length === 0) {
-      return;
-    }
-    if (endsWithBreak) {
-      const prefix = typedPending.trim();
-      const merged = prefix ? `${prefix} ${parts.join(" ")}` : parts.join(" ");
-      onCommitTypedWords(merged);
-      onTypedPendingChange("");
-      pendingScrollToEndRef.current = true;
-    } else {
-      const complete = parts.slice(0, -1);
-      const remainder = parts[parts.length - 1] ?? "";
-      const prefix = typedPending.trim();
-      if (complete.length > 0) {
-        const merged = prefix
-          ? `${prefix} ${complete.join(" ")}`
-          : complete.join(" ");
-        onCommitTypedWords(merged);
-        onTypedPendingChange(remainder);
-        pendingScrollToEndRef.current = true;
-      } else {
-        onTypedPendingChange(prefix ? `${prefix}${remainder}` : remainder);
-      }
-    }
+    // Keep the draft intact until Enter / submit — spaces no longer commit.
+    onTypedPendingChange(`${typedPending}${pasted}`);
   });
 
   // After typed words fold into the strip, chase the live edge once measured.
@@ -1054,10 +1414,6 @@ export function TranscriptPanel({
       }
       event.preventDefault();
       focusTypeInput();
-      if (event.key === " " || event.key === "\n") {
-        commitTypedDraft();
-        return;
-      }
       onTypedPendingChange(`${typedPending}${event.key}`);
     };
 
@@ -1112,16 +1468,16 @@ export function TranscriptPanel({
             <p className="transcript-entry-blurb">{SITE_DESCRIPTION}</p>
           </header>
           <div className="transcript-paste-field">
-            <input
+            <textarea
               ref={pasteRef}
-              type="text"
               className="transcript-paste"
               value={draft}
-              placeholder="Type your thoughts"
+              placeholder="Type to begin..."
               spellCheck={false}
               autoComplete="off"
               autoFocus
-              aria-label="Type your thoughts"
+              rows={1}
+              aria-label="Type to begin"
               onChange={(event) => setDraft(event.target.value)}
               onPaste={(event) => {
                 const pasted = event.clipboardData.getData("text");
@@ -1135,8 +1491,7 @@ export function TranscriptPanel({
                 if (event.nativeEvent.isComposing || event.keyCode === 229) {
                   return;
                 }
-                // First space or newline starts the field with whatever is typed.
-                if (event.key === "Enter" || event.key === " ") {
+                if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   submitDraft();
                 }
@@ -1156,30 +1511,25 @@ export function TranscriptPanel({
                 </button>
               </HudTooltip>
               {draft.trim() ? (
-                <HudTooltip
-                  text="Submit transcript"
-                  preferredPlacement="above"
+                <button
+                  type="button"
+                  className="transcript-entry-action"
+                  aria-label="Submit transcript"
+                  onClick={submitDraft}
                 >
-                  <button
-                    type="button"
-                    className="transcript-entry-action"
-                    aria-label="Submit transcript"
-                    onClick={submitDraft}
+                  <svg
+                    className="transcript-entry-action-icon"
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    aria-hidden="true"
                   >
-                    <svg
-                      className="transcript-entry-action-icon"
-                      viewBox="0 0 24 24"
-                      width="14"
-                      height="14"
-                      aria-hidden="true"
-                    >
-                      <path
-                        fill="currentColor"
-                        d="M12 4.5a1 1 0 0 1 .7.3l5.5 5.5a1 1 0 1 1-1.4 1.4L13 7.9V19a1 1 0 1 1-2 0V7.9L7.2 11.7a1 1 0 1 1-1.4-1.4l5.5-5.5a1 1 0 0 1 .7-.3Z"
-                      />
-                    </svg>
-                  </button>
-                </HudTooltip>
+                    <path
+                      fill="currentColor"
+                      d="M12 4.5a1 1 0 0 1 .7.3l5.5 5.5a1 1 0 1 1-1.4 1.4L13 7.9V19a1 1 0 1 1-2 0V7.9L7.2 11.7a1 1 0 1 1-1.4-1.4l5.5-5.5a1 1 0 0 1 .7-.3Z"
+                    />
+                  </svg>
+                </button>
               ) : (
                 <button
                   type="button"
@@ -1214,142 +1564,240 @@ export function TranscriptPanel({
       className={`transcript-panel${hasTranscript || isTyping ? "" : " is-empty"}`}
     >
       <div className="transcript-toolbar">
-        {isTyping ? (
-          <div className="transcript-typing-line" aria-live="polite">
-            <span className="transcript-typing-word">{typedPending}</span>
-          </div>
-        ) : (
-          <RecordButton
-            listening={listening}
-            ready={ready}
-            stream={mediaStream}
-            onToggle={onToggleListen}
-          />
-        )}
-      </div>
-      <div
-        className="transcript-body"
-        ref={bodyRef}
-        onPointerDown={(event) => {
-          // Keep word clicks for focus/select; empty chrome starts typing.
-          if (
-            event.target instanceof Element &&
-            event.target.closest(".transcript-word.is-interactive")
-          ) {
-            return;
-          }
-          focusTypeInput();
-        }}
-      >
-        {hasTranscript ? (
-          <div
-            className="transcript-text"
-            style={{ width: virtualizer.getTotalSize() }}
-          >
-            {virtualizer.getVirtualItems().map((item) => {
-              const token = tokens[item.index];
-              if (!token) {
-                return null;
+        <div
+          className={`transcript-typing-field${listening ? " is-listening" : ""}`}
+        >
+          <textarea
+            ref={typeInputRef}
+            className="transcript-typing-input"
+            value={typedPending}
+            placeholder="Keep typing..."
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            rows={1}
+            aria-label="Type into transcript"
+            onChange={(event) => {
+              onTypedPendingChange(event.target.value);
+            }}
+            onCompositionStart={() => {
+              typingComposingRef.current = true;
+            }}
+            onCompositionEnd={(event) => {
+              typingComposingRef.current = false;
+              onTypedPendingChange(event.currentTarget.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || typingComposingRef.current) {
+                return;
               }
-              const interactive = token.label !== null && !token.redacted;
-              // Prefer occurrence index so virtualized duplicates don't all light up.
-              const focused =
-                !token.redacted &&
-                (focusedIndex !== null
-                  ? item.index === focusedIndex
-                  : focusedLabel !== null && token.label === focusedLabel);
-              return (
-                <TranscriptWord
-                  key={token.key}
-                  tokenKey={token.key}
-                  raw={token.raw}
-                  label={token.label}
-                  redacted={token.redacted}
-                  phaseCache={phaseCacheRef.current}
-                  dataIndex={item.index}
-                  measureRef={virtualizer.measureElement}
-                  offsetStart={item.start}
-                  interactive={interactive}
-                  focused={focused}
-                  onActivate={handleActivate}
-                  onSelect={handleSelect}
-                  onHoverLeave={handleHoverLeave}
-                  wordEls={wordElsRef.current}
-                  activationsRef={activationsRef}
-                  onFocusedElement={registerFocusedWordEl}
-                />
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                commitTypedDraft();
+              }
+            }}
+            onPaste={(event) => {
+              event.preventDefault();
+              applyTypedPaste(event.clipboardData.getData("text/plain"));
+            }}
+            onCopy={(event) => {
+              const input = event.currentTarget;
+              if (input.selectionStart !== input.selectionEnd) {
+                return;
+              }
+              const text = [committed, typedPending]
+                .filter(Boolean)
+                .join(" ")
+                .trim();
+              if (!text) {
+                return;
+              }
+              event.preventDefault();
+              event.clipboardData.setData("text/plain", text);
+            }}
+          />
+          <div className="transcript-typing-actions">
+            {hasTypedDraft ? (
+              <button
+                type="button"
+                className="transcript-entry-action"
+                aria-label="Submit transcript"
+                onClick={commitTypedDraft}
+              >
+                <svg
+                  className="transcript-entry-action-icon"
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill="currentColor"
+                    d="M12 4.5a1 1 0 0 1 .7.3l5.5 5.5a1 1 0 1 1-1.4 1.4L13 7.9V19a1 1 0 1 1-2 0V7.9L7.2 11.7a1 1 0 1 1-1.4-1.4l5.5-5.5a1 1 0 0 1 .7-.3Z"
+                  />
+                </svg>
+              </button>
+            ) : (
+              <RecordButton
+                listening={listening}
+                ready={ready}
+                stream={mediaStream}
+                onToggle={onToggleListen}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="transcript-scroll">
+        {hasTranscript && scrub.canScrub ? (
+          <div
+            ref={scrubTrackRef}
+            className={`transcript-scrub${scrubActive ? " is-active" : ""}`}
+            role="slider"
+            aria-label="Scrub transcript"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(scrub.progress * 100)}
+            tabIndex={0}
+            onPointerEnter={(event) => {
+              pointerOverTranscriptRef.current = true;
+              markTranscriptActivity();
+              if (!scrubbingRef.current) {
+                setScrubGhost(scrubProgressFromClientX(event.clientX));
+              }
+            }}
+            onPointerLeave={() => {
+              if (!scrubbingRef.current) {
+                pointerOverTranscriptRef.current = false;
+                setScrubGhost(null);
+              }
+            }}
+            onPointerDown={(event) => {
+              // Own the gesture so the canvas under the panel can't select a node.
+              event.preventDefault();
+              event.stopPropagation();
+              beginScrubGesture(
+                event.currentTarget,
+                event.pointerId,
+                event.clientX,
               );
-            })}
+            }}
+            onPointerMove={(event) => {
+              // Drag moves are handled on window so release-outside always ends.
+              if (scrubbingRef.current) {
+                return;
+              }
+              setScrubGhost(scrubProgressFromClientX(event.clientX));
+            }}
+            onKeyDown={(event) => {
+              const body = bodyRef.current;
+              if (!body) {
+                return;
+              }
+              const maxScroll = body.scrollWidth - body.clientWidth;
+              if (maxScroll <= 1) {
+                return;
+              }
+              const step = Math.max(48, body.clientWidth * 0.2);
+              if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+                event.preventDefault();
+                body.scrollLeft = Math.max(0, body.scrollLeft - step);
+                markTranscriptActivity();
+                syncScrubFromScroll();
+              } else if (
+                event.key === "ArrowRight" ||
+                event.key === "ArrowUp"
+              ) {
+                event.preventDefault();
+                body.scrollLeft = Math.min(maxScroll, body.scrollLeft + step);
+                markTranscriptActivity();
+                syncScrubFromScroll();
+              } else if (event.key === "Home") {
+                event.preventDefault();
+                body.scrollLeft = 0;
+                markTranscriptActivity();
+                syncScrubFromScroll();
+              } else if (event.key === "End") {
+                event.preventDefault();
+                body.scrollLeft = maxScroll;
+                markTranscriptActivity();
+                syncScrubFromScroll();
+              }
+            }}
+          >
+            {scrubGhost !== null && !scrubActive ? (
+              <div
+                className="transcript-scrub-ghost"
+                style={{
+                  left: `calc(${scrubGhost} * (100% - 0.45rem) + 0.225rem)`,
+                }}
+              />
+            ) : null}
+            <div
+              className="transcript-scrub-thumb"
+              style={{
+                left: `calc(${scrub.progress} * (100% - 0.45rem) + 0.225rem)`,
+              }}
+            />
           </div>
         ) : null}
+        <div
+          className="transcript-body"
+          ref={bodyRef}
+          onPointerDown={(event) => {
+            // Keep word clicks for focus/select; empty chrome starts typing.
+            if (
+              event.target instanceof Element &&
+              event.target.closest(".transcript-word.is-interactive")
+            ) {
+              return;
+            }
+            focusTypeInput();
+          }}
+        >
+          {hasTranscript ? (
+            <div
+              className="transcript-text"
+              style={{ width: virtualizer.getTotalSize() }}
+            >
+              {virtualizer.getVirtualItems().map((item) => {
+                const token = tokens[item.index];
+                if (!token) {
+                  return null;
+                }
+                const interactive = token.label !== null && !token.redacted;
+                // Prefer occurrence index so virtualized duplicates don't all light up.
+                const focused =
+                  !token.redacted &&
+                  (focusedIndex !== null
+                    ? item.index === focusedIndex
+                    : focusedLabel !== null && token.label === focusedLabel);
+                return (
+                  <TranscriptWord
+                    key={token.key}
+                    tokenKey={token.key}
+                    raw={token.raw}
+                    label={token.label}
+                    redacted={token.redacted}
+                    phaseCache={phaseCacheRef.current}
+                    dataIndex={item.index}
+                    measureRef={virtualizer.measureElement}
+                    offsetStart={item.start}
+                    interactive={interactive}
+                    focused={focused}
+                    onActivate={handleActivate}
+                    onSelect={handleSelect}
+                    onHoverLeave={handleHoverLeave}
+                    wordEls={wordElsRef.current}
+                    activationsRef={activationsRef}
+                    onFocusedElement={registerFocusedWordEl}
+                  />
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
       </div>
-      <input
-        ref={typeInputRef}
-        className="transcript-type-input"
-        value={typedPending}
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        aria-label="Type into transcript"
-        onChange={(event) => {
-          if (typingComposingRef.current) {
-            onTypedPendingChange(event.target.value);
-            return;
-          }
-          // Space / newline → fold finished words into the blocked transcript.
-          const value = event.target.value;
-          if (/\s/.test(value)) {
-            applyTypedPaste(value);
-            return;
-          }
-          onTypedPendingChange(value);
-        }}
-        onCompositionStart={() => {
-          typingComposingRef.current = true;
-        }}
-        onCompositionEnd={(event) => {
-          typingComposingRef.current = false;
-          const value = event.currentTarget.value;
-          if (/\s/.test(value)) {
-            applyTypedPaste(value);
-            return;
-          }
-          onTypedPendingChange(value);
-        }}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing || typingComposingRef.current) {
-            return;
-          }
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commitTypedDraft();
-            return;
-          }
-          if (event.key === " ") {
-            event.preventDefault();
-            commitTypedDraft();
-          }
-        }}
-        onPaste={(event) => {
-          event.preventDefault();
-          applyTypedPaste(event.clipboardData.getData("text/plain"));
-        }}
-        onCopy={(event) => {
-          const input = event.currentTarget;
-          if (input.selectionStart !== input.selectionEnd) {
-            return;
-          }
-          const text = [committed, typedPending]
-            .filter(Boolean)
-            .join(" ")
-            .trim();
-          if (!text) {
-            return;
-          }
-          event.preventDefault();
-          event.clipboardData.setData("text/plain", text);
-        }}
-      />
     </aside>
   );
 }
