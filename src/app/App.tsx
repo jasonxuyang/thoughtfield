@@ -15,8 +15,9 @@ import { DemoTranscriptStream } from "../demo/demo-stream";
 import {
   createEntryPreviewGraph,
   ENTRY_PREVIEW_CONFIG,
-  entryPreviewTranscript,
 } from "../demo/entry-preview-graph";
+import { SAMPLE_CATALOG } from "../demo/samples/catalog";
+import { loadSampleGraph } from "../demo/samples/load-sample";
 import {
   createDemoSeed,
   transcriptToCommittedWords,
@@ -380,7 +381,9 @@ export function App() {
           nodes: preview.nodes,
           edges: preview.edges,
           communities: preview.communities,
-          occurrences: preview.occurrences,
+          // No transcript UI on the entry field — skip occurrences so the
+          // reveal prefix stays at 0 until the user adopts the sample.
+          occurrences: [],
           committedTranscript: preview.committedTranscript,
           sequenceIndex: preview.sequenceIndex,
         },
@@ -410,14 +413,13 @@ export function App() {
     setSelectedDetail(null);
   });
 
-  /** Adopt the preview field as a real, interactive session with its transcript. */
-  const handleTrySample = useEffectEvent(async () => {
+  /** Adopt a precomputed sample field as a real, interactive session. */
+  const handleTrySample = useEffectEvent(async (sampleId: string) => {
     releaseEntryPreviewTour();
-    const preview = await createEntryPreviewGraph();
-    const transcript = entryPreviewTranscript();
-    transcriptBaselineRef.current = transcript;
+    const preview = await loadSampleGraph(sampleId);
+    transcriptBaselineRef.current = preview.transcript;
     typingSessionActiveRef.current = false;
-    setCommittedText(transcript);
+    setCommittedText(preview.transcript);
     setPendingText("");
     setTypedPending("");
     selectedNodeIdRef.current = null;
@@ -429,7 +431,7 @@ export function App() {
         edges: preview.edges,
         communities: preview.communities,
         occurrences: preview.occurrences,
-        committedTranscript: transcript,
+        committedTranscript: preview.transcript,
         sequenceIndex: preview.sequenceIndex,
       },
     });
@@ -1041,6 +1043,7 @@ export function App() {
             onPasteTranscript={handlePasteTranscript}
             onTypedPendingChange={handleTypedPendingChange}
             onCommitTypedWords={handleCommitTypedWords}
+            samples={SAMPLE_CATALOG}
             onTrySample={handleTrySample}
             onActivateLabel={(label) => {
               const nodeId = labelToNodeIdRef.current.get(label);

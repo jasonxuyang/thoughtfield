@@ -1,0 +1,71 @@
+import type { SampleDefinition } from "./types";
+
+const PASSAGES = [
+  "Thoughtfield listens in the browser. Microphone speech becomes a Whisper transcript on your local device.",
+  "Paste a transcript or keep speaking. Words arrive as language unfolds in real time.",
+  "Local embeddings place each word in context. Semantic similarity pulls related language toward shared meaning.",
+  "Embeddings bind ideas across the session while context keeps nearby phrases aligned.",
+  "The graph grows from semantic links and colocation. Related ideas cluster into communities.",
+  "Nodes settle into a kinetic field. Communities tighten as similarity and phrases reinforce each other.",
+  "Activation spreads through connected nodes when you speak or paste. The field pulses with meaning.",
+  "Thoughtfield stays private on your device. Browser speech, Whisper, embeddings, and the graph never leave.",
+];
+
+export const THOUGHTFIELD_SAMPLE: SampleDefinition = {
+  id: "thoughtfield",
+  label: "Thoughtfield",
+  tooltip: "See an example Thoughtfield",
+  // Passages + short encore so the field has density.
+  transcript: [...PASSAGES, ...PASSAGES.slice(0, 4)].join(" "),
+  semanticGroups: [
+    [
+      "thoughtfield",
+      "listen",
+      "browser",
+      "microphone",
+      "speech",
+      "whisper",
+      "transcript",
+      "device",
+      "local",
+      "private",
+      "paste",
+      "speak",
+    ],
+    [
+      "embedding",
+      "context",
+      "semantic",
+      "similarity",
+      "language",
+      "mean",
+      "word",
+      "idea",
+      "session",
+      "align",
+    ],
+    [
+      "graph",
+      "colocation",
+      "community",
+      "node",
+      "phrase",
+      "cluster",
+      "link",
+      "co-occurrence",
+      "field",
+      "grow",
+    ],
+    [
+      "activation",
+      "kinetic",
+      "pulse",
+      "spread",
+      "connect",
+      "reinforce",
+      "settle",
+      "tighten",
+      "relate",
+    ],
+  ],
+};

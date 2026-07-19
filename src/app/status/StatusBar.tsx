@@ -404,6 +404,7 @@ export function TranscriptPanel({
   onPasteTranscript,
   onTypedPendingChange,
   onCommitTypedWords,
+  samples,
   onTrySample,
   onActivateLabel,
   onSelectLabel,
@@ -429,7 +430,8 @@ export function TranscriptPanel({
   onPasteTranscript: (text: string) => void;
   onTypedPendingChange: (text: string) => void;
   onCommitTypedWords: (text: string) => void;
-  onTrySample: () => void;
+  samples: ReadonlyArray<{ id: string; label: string; tooltip: string }>;
+  onTrySample: (sampleId: string) => void;
   onActivateLabel: (label: string) => void;
   onSelectLabel: (label: string) => void;
   /** User scrolled the strip — pauses shared canvas/transcript follow. */
@@ -1498,18 +1500,6 @@ export function TranscriptPanel({
               }}
             />
             <div className="transcript-entry-actions">
-              <HudTooltip
-                text="See an example Thoughtfield"
-                preferredPlacement="above"
-              >
-                <button
-                  type="button"
-                  className="transcript-try-sample"
-                  onClick={onTrySample}
-                >
-                  Preview
-                </button>
-              </HudTooltip>
               {draft.trim() ? (
                 <button
                   type="button"
@@ -1553,6 +1543,30 @@ export function TranscriptPanel({
                 </button>
               )}
             </div>
+          </div>
+          <div
+            className="transcript-sample-list"
+            role="group"
+            aria-label="Example Thoughtfields"
+          >
+            {samples.map((sample, index) => (
+              <span key={sample.id} className="transcript-sample-item">
+                {index > 0 ? (
+                  <span className="transcript-sample-sep" aria-hidden="true">
+                    ·
+                  </span>
+                ) : null}
+                <HudTooltip text={sample.tooltip} preferredPlacement="above">
+                  <button
+                    type="button"
+                    className="transcript-try-sample"
+                    onClick={() => onTrySample(sample.id)}
+                  >
+                    {sample.label}
+                  </button>
+                </HudTooltip>
+              </span>
+            ))}
           </div>
         </div>
       </aside>

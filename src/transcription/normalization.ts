@@ -15,6 +15,9 @@ const FILLERS = new Set([
   "you know",
   "basically",
   "actually",
+  "ha-ah-ah",
+  "oh-oh-oh",
+  "ah-ah",
 ]);
 
 const STOP_WORDS = new Set([
@@ -157,10 +160,26 @@ const TECH_CANONICAL: Record<string, string> = {
   "pixi js": "pixijs",
 };
 
+/**
+ * Surface forms wink mishandles (shining→shin, born→bear) or that should
+ * stay as sung colloquialisms after g-drop expansion.
+ */
+const SURFACE_CANONICAL: Record<string, string> = {
+  shinin: "shine",
+  shining: "shine",
+  born: "born",
+};
+
 const lemmaCache = new Map<string, string>();
 
+/** True when the token includes Hangul (or other non-Latin letters). */
+function hasNonLatinLetter(token: string): boolean {
+  return /[^\u0000-\u024F]/.test(token);
+}
+
 function stripPunctuation(token: string): string {
-  return token.replace(/^[^a-z0-9+#]+|[^a-z0-9+#]+$/gi, "");
+  // Keep letters (incl. Hangul), digits, and tech markers — not only Latin.
+  return token.replace(/^[^\p{L}\p{N}+#]+|[^\p{L}\p{N}+#]+$/gu, "");
 }
 
 /**
@@ -266,6 +285,10 @@ export function normalizeToken(raw: string): string | null {
     return TECH_CANONICAL[stripped]!;
   }
 
+  if (SURFACE_CANONICAL[stripped]) {
+    return SURFACE_CANONICAL[stripped]!;
+  }
+
   if (NEGATION_ALLOWLIST.has(stripped)) {
     return stripped;
   }
@@ -276,6 +299,11 @@ export function normalizeToken(raw: string): string | null {
 
   if (/^\d+$/.test(stripped)) {
     return null;
+  }
+
+  // wink is English-only — keep Hangul / other scripts as surface forms.
+  if (hasNonLatinLetter(stripped)) {
+    return stripped;
   }
 
   const lemma = lemmatize(stripped).toLowerCase();

@@ -57,6 +57,17 @@ describe("normalization", () => {
     );
   });
 
+  it("keeps sung colloquialisms wink would mangle", () => {
+    expect(normalizeToken("shinin'")).toBe("shine");
+    expect(normalizeToken("shining")).toBe("shine");
+    expect(normalizeToken("born")).toBe("born");
+  });
+
+  it("preserves Hangul surface forms", () => {
+    expect(normalizeToken("영원히")).toBe("영원히");
+    expect(normalizeToken("빛나는")).toBe("빛나는");
+  });
+
   it("rejects numeric-only and empty tokens", () => {
     expect(normalizeToken("42")).toBeNull();
     expect(normalizeToken("...")).toBeNull();

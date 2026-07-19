@@ -495,7 +495,7 @@ button:disabled {
   min-height: 2.85rem;
   max-height: 9rem;
   margin: 0;
-  padding: 0.7rem 7.5rem 0.7rem 0;
+  padding: 0.7rem 3.25rem 0.7rem 0;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -524,15 +524,38 @@ button:disabled {
   gap: 0.85rem;
 }
 
+.transcript-sample-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+  margin-top: -0.25rem;
+}
+
+.transcript-sample-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.transcript-sample-sep {
+  margin: 0 0.4rem;
+  color: rgba(255, 255, 255, 0.28);
+  font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
+  font-size: 0.78rem;
+  user-select: none;
+}
+
 .transcript-try-sample {
   margin: 0;
   padding: 0;
   border: none;
   border-radius: 0;
   background: transparent;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.48);
   font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   letter-spacing: 0.02em;
   white-space: nowrap;
   cursor: pointer;
