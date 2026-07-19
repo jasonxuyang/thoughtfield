@@ -6,7 +6,7 @@ export const SITE_NAME = "Thoughtfield";
 export const SITE_TITLE = "Thoughtfield — local speech-to-graph field";
 
 export const SITE_DESCRIPTION =
-  "Thoughtfield turns speech into a living graph of words and ideas using on-device transcription and semantic connections in your browser.";
+  "Turn your thoughts into a living graph of words and ideas using on-device transcription and semantic connections in your browser.";
 
 export const AUTHOR_NAME = "Jason Yang";
 

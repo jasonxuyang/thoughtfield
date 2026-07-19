@@ -8,8 +8,8 @@ import {
   type MutableRefObject,
 } from "react";
 import { CAMERA_FOLLOW } from "../../config/algorithms";
-import { THOUGHTFIELD_BLURB } from "../../demo/entry-preview-graph";
 import { activationColorCss } from "../../rendering/activation-style";
+import { SITE_DESCRIPTION } from "../../site";
 import { normalizeToken } from "../../transcription/normalization";
 import type { FocusLockTarget } from "../controls/CustomCursor";
 import { HudTooltip } from "../controls/HudTooltip";
@@ -118,6 +118,15 @@ function buildTokens(
   }
 
   return tokens;
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    !!target.closest(
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""]',
+    )
+  );
 }
 
 function prefersReducedMotion(): boolean {
@@ -312,6 +321,7 @@ function TranscriptWord({
 export function TranscriptPanel({
   committed,
   pending,
+  typedPending,
   canvasLabels,
   focusedLabel,
   listening,
@@ -319,6 +329,8 @@ export function TranscriptPanel({
   mediaStream,
   onToggleListen,
   onPasteTranscript,
+  onTypedPendingChange,
+  onCommitTypedWords,
   onTrySample,
   onActivateLabel,
   onSelectLabel,
@@ -331,6 +343,7 @@ export function TranscriptPanel({
 }: {
   committed: string;
   pending: string;
+  typedPending: string;
   canvasLabels: ReadonlySet<string>;
   focusedLabel: string | null;
   listening: boolean;
@@ -338,6 +351,8 @@ export function TranscriptPanel({
   mediaStream: MediaStream | null;
   onToggleListen: () => void;
   onPasteTranscript: (text: string) => void;
+  onTypedPendingChange: (text: string) => void;
+  onCommitTypedWords: (text: string) => void;
   onTrySample: () => void;
   onActivateLabel: (label: string) => void;
   onSelectLabel: (label: string) => void;
@@ -359,7 +374,10 @@ export function TranscriptPanel({
   releaseCursorLockRef?: MutableRefObject<(() => void) | null>;
 }) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const pasteRef = useRef<HTMLTextAreaElement | null>(null);
+  const pasteRef = useRef<HTMLInputElement | null>(null);
+  const typeInputRef = useRef<HTMLInputElement | null>(null);
+  const typingComposingRef = useRef(false);
+  const pendingScrollToEndRef = useRef(false);
   const phaseCacheRef = useRef(new Map<string, BlockPhase>());
   const prevTokenCountRef = useRef(0);
   const hoveredLabelRef = useRef<string | null>(null);
@@ -393,6 +411,8 @@ export function TranscriptPanel({
   const [draft, setDraft] = useState("");
   const tokens = buildTokens(committed, pending, canvasLabels);
   const hasTranscript = tokens.length > 0;
+  const isTyping = typedPending.length > 0;
+  const showEntry = !hasTranscript && !listening && !isTyping;
 
   if (tokens.length < prevTokenCountRef.current) {
     phaseCacheRef.current.clear();
@@ -714,12 +734,14 @@ export function TranscriptPanel({
       if (event.metaKey || event.ctrlKey || event.altKey) {
         return;
       }
-      const target = event.target;
+      // Draft caret owns arrows only while a word is in progress. The hidden
+      // type input often keeps focus after commit — don't let that block nav.
+      if (typedPending.length > 0) {
+        return;
+      }
       if (
-        target instanceof HTMLElement &&
-        target.closest(
-          'input, textarea, select, [contenteditable="true"], [contenteditable=""]',
-        )
+        isEditableKeyboardTarget(event.target) &&
+        event.target !== typeInputRef.current
       ) {
         return;
       }
@@ -763,7 +785,7 @@ export function TranscriptPanel({
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
     };
-  }, [hasTranscript]);
+  }, [hasTranscript, typedPending]);
 
   useEffect(() => {
     if (!releaseCursorLockRef) {
@@ -899,11 +921,11 @@ export function TranscriptPanel({
   }, [hasTranscript]);
 
   useEffect(() => {
-    if (hasTranscript || listening) {
+    if (!showEntry) {
       return;
     }
     pasteRef.current?.focus();
-  }, [hasTranscript, listening]);
+  }, [showEntry]);
 
   const submitDraft = useEffectEvent(() => {
     const text = draft.trim();
@@ -914,7 +936,172 @@ export function TranscriptPanel({
     setDraft("");
   });
 
-  const showEntry = !hasTranscript && !listening;
+  /** Keep the strip parked on the live edge when typing commits words. */
+  const scrollTranscriptToEnd = useEffectEvent(() => {
+    if (tokens.length === 0) {
+      return;
+    }
+    setFocusedIndex(null);
+    focusedIndexRef.current = null;
+    cursorFocusLockRef.current = false;
+    userScrollOverrideRef.current = false;
+    programmaticScrollUntilRef.current = performance.now() + 200;
+    const body = bodyRef.current;
+    virtualizer.scrollToIndex(tokens.length - 1, {
+      align: "end",
+      behavior: "auto",
+    });
+    // After measure, pin the scrollport to the true trailing edge.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (body) {
+          body.scrollLeft = Math.max(0, body.scrollWidth - body.clientWidth);
+        }
+      });
+    });
+  });
+
+  const focusTypeInput = useEffectEvent(() => {
+    typeInputRef.current?.focus();
+  });
+
+  const commitTypedDraft = useEffectEvent(() => {
+    const text = typedPending.trim();
+    if (!text) {
+      onTypedPendingChange("");
+      return;
+    }
+    // Fold into committed transcript — strip shows blocked words until spheres land.
+    onCommitTypedWords(text);
+    onTypedPendingChange("");
+    pendingScrollToEndRef.current = true;
+  });
+
+  const applyTypedPaste = useEffectEvent((pasted: string) => {
+    if (!pasted) {
+      return;
+    }
+    // Space / newline ends a word; keep a trailing partial in the draft line.
+    const endsWithBreak = /\s$/.test(pasted);
+    const parts = pasted.replace(/\r\n/g, "\n").split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      return;
+    }
+    if (endsWithBreak) {
+      const prefix = typedPending.trim();
+      const merged = prefix ? `${prefix} ${parts.join(" ")}` : parts.join(" ");
+      onCommitTypedWords(merged);
+      onTypedPendingChange("");
+      pendingScrollToEndRef.current = true;
+    } else {
+      const complete = parts.slice(0, -1);
+      const remainder = parts[parts.length - 1] ?? "";
+      const prefix = typedPending.trim();
+      if (complete.length > 0) {
+        const merged = prefix
+          ? `${prefix} ${complete.join(" ")}`
+          : complete.join(" ");
+        onCommitTypedWords(merged);
+        onTypedPendingChange(remainder);
+        pendingScrollToEndRef.current = true;
+      } else {
+        onTypedPendingChange(prefix ? `${prefix}${remainder}` : remainder);
+      }
+    }
+  });
+
+  // After typed words fold into the strip, chase the live edge once measured.
+  useLayoutEffect(() => {
+    if (!pendingScrollToEndRef.current) {
+      return;
+    }
+    pendingScrollToEndRef.current = false;
+    scrollTranscriptToEnd();
+  }, [committed, tokens.length]);
+
+  // Global capture: start typing from anywhere (cancels record via App).
+  useEffect(() => {
+    if (showEntry) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      if (isEditableKeyboardTarget(event.target)) {
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        focusTypeInput();
+        commitTypedDraft();
+        return;
+      }
+      if (event.key === "Backspace") {
+        focusTypeInput();
+        if (typedPending.length > 0) {
+          event.preventDefault();
+          onTypedPendingChange(typedPending.slice(0, -1));
+        }
+        return;
+      }
+      if (event.key.length !== 1) {
+        return;
+      }
+      event.preventDefault();
+      focusTypeInput();
+      if (event.key === " " || event.key === "\n") {
+        commitTypedDraft();
+        return;
+      }
+      onTypedPendingChange(`${typedPending}${event.key}`);
+    };
+
+    const onPaste = (event: ClipboardEvent) => {
+      if (isEditableKeyboardTarget(event.target)) {
+        return;
+      }
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (!text) {
+        return;
+      }
+      event.preventDefault();
+      focusTypeInput();
+      applyTypedPaste(text);
+    };
+
+    const onCopy = (event: ClipboardEvent) => {
+      if (isEditableKeyboardTarget(event.target)) {
+        const input = typeInputRef.current;
+        if (
+          input &&
+          document.activeElement === input &&
+          input.selectionStart !== input.selectionEnd
+        ) {
+          return;
+        }
+      }
+      const text = [committed, typedPending].filter(Boolean).join(" ").trim();
+      if (!text) {
+        return;
+      }
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", text);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("paste", onPaste);
+    window.addEventListener("copy", onCopy);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("paste", onPaste);
+      window.removeEventListener("copy", onCopy);
+    };
+  }, [showEntry, typedPending, committed]);
 
   if (showEntry) {
     return (
@@ -922,17 +1109,19 @@ export function TranscriptPanel({
         <div className="transcript-entry">
           <header className="transcript-entry-intro">
             <h1 className="transcript-entry-brand">Thoughtfield</h1>
-            <p className="transcript-entry-blurb">{THOUGHTFIELD_BLURB}</p>
+            <p className="transcript-entry-blurb">{SITE_DESCRIPTION}</p>
           </header>
           <div className="transcript-paste-field">
-            <textarea
+            <input
               ref={pasteRef}
+              type="text"
               className="transcript-paste"
               value={draft}
-              rows={3}
-              placeholder="Start writing — or just begin thinking out loud…"
+              placeholder="Type your thoughts"
               spellCheck={false}
-              aria-label="Start writing"
+              autoComplete="off"
+              autoFocus
+              aria-label="Type your thoughts"
               onChange={(event) => setDraft(event.target.value)}
               onPaste={(event) => {
                 const pasted = event.clipboardData.getData("text");
@@ -943,7 +1132,11 @@ export function TranscriptPanel({
                 onPasteTranscript(pasted);
               }}
               onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) {
+                  return;
+                }
+                // First space or newline starts the field with whatever is typed.
+                if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   submitDraft();
                 }
@@ -951,7 +1144,7 @@ export function TranscriptPanel({
             />
             <div className="transcript-entry-actions">
               <HudTooltip
-                text="Try an example conversation"
+                text="See an example Thoughtfield"
                 preferredPlacement="above"
               >
                 <button
@@ -988,31 +1181,26 @@ export function TranscriptPanel({
                   </button>
                 </HudTooltip>
               ) : (
-                <HudTooltip
-                  text="Start recording"
-                  preferredPlacement="above"
+                <button
+                  type="button"
+                  className="transcript-entry-action"
+                  disabled={!ready}
+                  aria-label="Use voice"
+                  onClick={onToggleListen}
                 >
-                  <button
-                    type="button"
-                    className="transcript-entry-action"
-                    disabled={!ready}
-                    aria-label="Start recording"
-                    onClick={onToggleListen}
+                  <svg
+                    className="transcript-entry-action-icon"
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    aria-hidden="true"
                   >
-                    <svg
-                      className="transcript-entry-action-icon"
-                      viewBox="0 0 24 24"
-                      width="14"
-                      height="14"
-                      aria-hidden="true"
-                    >
-                      <path
-                        fill="currentColor"
-                        d="M12 2a3.5 3.5 0 0 0-3.5 3.5v6a3.5 3.5 0 1 0 7 0v-6A3.5 3.5 0 0 0 12 2Zm-6 9.5a1 1 0 1 0-2 0 8 8 0 0 0 7 7.94V21H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-1.56A8 8 0 0 0 20 11.5a1 1 0 1 0-2 0 6 6 0 1 1-12 0Z"
-                      />
-                    </svg>
-                  </button>
-                </HudTooltip>
+                    <path
+                      fill="currentColor"
+                      d="M12 2a3.5 3.5 0 0 0-3.5 3.5v6a3.5 3.5 0 1 0 7 0v-6A3.5 3.5 0 0 0 12 2Zm-6 9.5a1 1 0 1 0-2 0 8 8 0 0 0 7 7.94V21H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-1.56A8 8 0 0 0 20 11.5a1 1 0 1 0-2 0 6 6 0 1 1-12 0Z"
+                    />
+                  </svg>
+                </button>
               )}
             </div>
           </div>
@@ -1023,18 +1211,37 @@ export function TranscriptPanel({
 
   return (
     <aside
-      className={`transcript-panel${hasTranscript ? "" : " is-empty"}`}
+      className={`transcript-panel${hasTranscript || isTyping ? "" : " is-empty"}`}
     >
       <div className="transcript-toolbar">
-        <RecordButton
-          listening={listening}
-          ready={ready}
-          stream={mediaStream}
-          onToggle={onToggleListen}
-        />
+        {isTyping ? (
+          <div className="transcript-typing-line" aria-live="polite">
+            <span className="transcript-typing-word">{typedPending}</span>
+          </div>
+        ) : (
+          <RecordButton
+            listening={listening}
+            ready={ready}
+            stream={mediaStream}
+            onToggle={onToggleListen}
+          />
+        )}
       </div>
-      {hasTranscript ? (
-        <div className="transcript-body" ref={bodyRef}>
+      <div
+        className="transcript-body"
+        ref={bodyRef}
+        onPointerDown={(event) => {
+          // Keep word clicks for focus/select; empty chrome starts typing.
+          if (
+            event.target instanceof Element &&
+            event.target.closest(".transcript-word.is-interactive")
+          ) {
+            return;
+          }
+          focusTypeInput();
+        }}
+      >
+        {hasTranscript ? (
           <div
             className="transcript-text"
             style={{ width: virtualizer.getTotalSize() }}
@@ -1074,8 +1281,75 @@ export function TranscriptPanel({
               );
             })}
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
+      <input
+        ref={typeInputRef}
+        className="transcript-type-input"
+        value={typedPending}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        aria-label="Type into transcript"
+        onChange={(event) => {
+          if (typingComposingRef.current) {
+            onTypedPendingChange(event.target.value);
+            return;
+          }
+          // Space / newline → fold finished words into the blocked transcript.
+          const value = event.target.value;
+          if (/\s/.test(value)) {
+            applyTypedPaste(value);
+            return;
+          }
+          onTypedPendingChange(value);
+        }}
+        onCompositionStart={() => {
+          typingComposingRef.current = true;
+        }}
+        onCompositionEnd={(event) => {
+          typingComposingRef.current = false;
+          const value = event.currentTarget.value;
+          if (/\s/.test(value)) {
+            applyTypedPaste(value);
+            return;
+          }
+          onTypedPendingChange(value);
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || typingComposingRef.current) {
+            return;
+          }
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commitTypedDraft();
+            return;
+          }
+          if (event.key === " ") {
+            event.preventDefault();
+            commitTypedDraft();
+          }
+        }}
+        onPaste={(event) => {
+          event.preventDefault();
+          applyTypedPaste(event.clipboardData.getData("text/plain"));
+        }}
+        onCopy={(event) => {
+          const input = event.currentTarget;
+          if (input.selectionStart !== input.selectionEnd) {
+            return;
+          }
+          const text = [committed, typedPending]
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+          if (!text) {
+            return;
+          }
+          event.preventDefault();
+          event.clipboardData.setData("text/plain", text);
+        }}
+      />
     </aside>
   );
 }

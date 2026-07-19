@@ -18,12 +18,6 @@ export const ENTRY_PREVIEW_CONFIG = {
 };
 
 /**
- * Entry copy — the preview graph is grown from a longer project script below.
- */
-export const THOUGHTFIELD_BLURB =
-  "Thoughtfield turns your words into a living map of ideas — clustering, connecting, and lighting up as you think out loud.";
-
-/**
  * Spoken-style passages about the product. Ingested in order so nearby words
  * form colocation links; semantic groups below shape clusters.
  */

@@ -112,11 +112,15 @@ export function App() {
   const [embeddings, setEmbeddings] = useState<ModelLoadProgress | null>(null);
   const [committedText, setCommittedText] = useState("");
   const [pendingText, setPendingText] = useState("");
+  /** In-progress typed word(s) — visible at the strip edge until space/enter. */
+  const [typedPending, setTypedPending] = useState("");
   /**
    * Transcript seeded by paste / sample / restore. ASR updates only append
    * after this — otherwise the first live hypothesis would wipe it.
    */
   const transcriptBaselineRef = useRef("");
+  const committedTextRef = useRef("");
+  committedTextRef.current = committedText;
   /** Normalized labels whose spheres are visible on the canvas. */
   const [canvasLabels, setCanvasLabels] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -341,12 +345,15 @@ export function App() {
     }
     transcriptBufferRef.current = null;
 
+    const live = next.committed.trim();
+    const baseline = transcriptBaselineRef.current.trim();
+    const committed =
+      baseline && live ? `${baseline} ${live}` : baseline || live;
+    // Keep the ref current for typing fold / listen handoff (don't wait on paint).
+    committedTextRef.current = committed;
+
     startTransition(() => {
-      const live = next.committed.trim();
-      const baseline = transcriptBaselineRef.current.trim();
-      setCommittedText(
-        baseline && live ? `${baseline} ${live}` : baseline || live,
-      );
+      setCommittedText(committed);
       setPendingText(next.pending);
     });
 
@@ -524,8 +531,10 @@ export function App() {
     const preview = await createEntryPreviewGraph();
     const transcript = entryPreviewTranscript();
     transcriptBaselineRef.current = transcript;
+    typingSessionActiveRef.current = false;
     setCommittedText(transcript);
     setPendingText("");
+    setTypedPending("");
     selectedNodeIdRef.current = null;
     setSelectedDetail(null);
     stopIdleTour();
@@ -968,6 +977,16 @@ export function App() {
     if (previewActiveRef.current) {
       stopEntryPreview();
     }
+    // Fold any typed draft into the baseline before opening a new ASR window.
+    const typed = typedPending.trim();
+    if (typed) {
+      handleCommitTypedWords(typed);
+      setTypedPending("");
+    } else {
+      transcriptBaselineRef.current = committedTextRef.current.trim();
+    }
+    typingSessionActiveRef.current = false;
+    setTypedPending("");
     try {
       await asrSessionRef.current?.start();
       setListening(true);
@@ -998,8 +1017,10 @@ export function App() {
     }
     transcriptBufferRef.current = null;
     transcriptBaselineRef.current = "";
+    typingSessionActiveRef.current = false;
     setCommittedText("");
     setPendingText("");
+    setTypedPending("");
     setCanvasLabels(new Set());
     selectedNodeIdRef.current = null;
     snapshotRef.current = null;
@@ -1021,8 +1042,70 @@ export function App() {
     transcriptBaselineRef.current = committed;
     setCommittedText(committed);
     setPendingText("");
+    setTypedPending("");
     ingestQueueRef.current?.enqueue(words);
   };
+
+  /** True after typing has folded ASR into the baseline (until listen/clear). */
+  const typingSessionActiveRef = useRef(false);
+
+  /**
+   * Stop recording / entry tour and fold the visible transcript into the ASR
+   * baseline so a later listen session appends instead of replaying.
+   */
+  const prepareForTypedInput = useEffectEvent(() => {
+    bumpIdleActivity();
+    const needsFold =
+      listeningRef.current ||
+      previewActiveRef.current ||
+      !typingSessionActiveRef.current;
+    if (previewActiveRef.current) {
+      stopEntryPreview();
+    }
+    if (listeningRef.current) {
+      asrSessionRef.current?.stop();
+      setListening(false);
+      setMediaStream(null);
+    }
+    if (needsFold) {
+      // stop() queues a transcript flush on rAF — apply it before folding.
+      if (transcriptRafRef.current !== null) {
+        cancelAnimationFrame(transcriptRafRef.current);
+        transcriptRafRef.current = null;
+      }
+      flushTranscriptBuffer();
+      const folded = committedTextRef.current.trim();
+      transcriptBaselineRef.current = folded;
+      // Drop ASR agreement so the next start() doesn't re-emit old committed text.
+      asrSessionRef.current?.reset();
+      setPendingText("");
+      typingSessionActiveRef.current = true;
+    }
+  });
+
+  const handleTypedPendingChange = useEffectEvent((text: string) => {
+    prepareForTypedInput();
+    setTypedPending(text);
+  });
+
+  /** Commit finished typed/pasted words into the transcript + graph. */
+  const handleCommitTypedWords = useEffectEvent((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    prepareForTypedInput();
+    const words = transcriptToCommittedWords(trimmed, Date.now(), 160);
+    if (words.length === 0) {
+      return;
+    }
+    const piece = words.map((word) => word.rawText).join(" ");
+    const previous = committedTextRef.current.trim();
+    const next = previous ? `${previous} ${piece}` : piece;
+    transcriptBaselineRef.current = next;
+    setCommittedText(next);
+    ingestQueueRef.current?.enqueue(words);
+  });
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1104,6 +1187,7 @@ export function App() {
           <TranscriptPanel
             committed={committedText}
             pending={pendingText}
+            typedPending={typedPending}
             canvasLabels={canvasLabels}
             focusedLabel={selectedDetail?.label ?? null}
             listening={listening}
@@ -1117,6 +1201,8 @@ export function App() {
               }
             }}
             onPasteTranscript={handlePasteTranscript}
+            onTypedPendingChange={handleTypedPendingChange}
+            onCommitTypedWords={handleCommitTypedWords}
             onTrySample={handleTrySample}
             onActivateLabel={(label) => {
               bumpIdleActivity();

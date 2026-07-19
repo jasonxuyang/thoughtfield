@@ -1,4 +1,3 @@
-import { HudTooltip } from "./HudTooltip";
 import { MicWaveform } from "./MicWaveform";
 
 type RecordButtonProps = {
@@ -15,14 +14,10 @@ export function RecordButton({
   stream,
   onToggle,
 }: RecordButtonProps) {
-  const label = listening ? "Stop recording" : "Start recording";
+  const label = listening ? "Stop recording" : "Use voice";
 
   return (
-    <HudTooltip
-      text={label}
-      preferredPlacement="above"
-      className={`mic-control${listening ? " is-listening" : ""}`}
-    >
+    <div className={`mic-control${listening ? " is-listening" : ""}`}>
       <button
         type="button"
         className="mic-transport"
@@ -49,6 +44,6 @@ export function RecordButton({
         </svg>
       </button>
       {listening ? <MicWaveform stream={stream} active /> : null}
-    </HudTooltip>
+    </div>
   );
 }

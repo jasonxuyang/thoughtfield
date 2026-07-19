@@ -357,9 +357,9 @@ button:disabled {
     rgba(0, 0, 0, 0) 100%
   );
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.4rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.9rem;
   overflow: hidden;
   pointer-events: none;
 }
@@ -367,6 +367,7 @@ button:disabled {
 .transcript-panel.is-empty {
   max-height: none;
   right: auto;
+  align-items: flex-start;
   padding: 1rem 1.1rem max(1rem, env(safe-area-inset-bottom));
   background: transparent;
 }
@@ -435,29 +436,29 @@ button:disabled {
 .transcript-paste-field {
   position: relative;
   width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(0, 0, 0, 0.55);
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.28);
+  background: transparent;
   transition: border-color 160ms ease;
 }
 
 .transcript-paste-field:focus-within {
-  border-color: rgba(255, 255, 255, 0.55);
+  border-bottom-color: rgba(255, 255, 255, 0.72);
 }
 
 .transcript-paste {
   display: block;
   width: 100%;
-  min-height: 4.5rem;
+  height: 2.85rem;
   margin: 0;
-  padding: 0.7rem 7.5rem 2.85rem 0.8rem;
-  resize: none;
+  padding: 0 7.5rem 0 0;
   border: none;
   border-radius: 0;
   background: transparent;
   color: rgba(255, 255, 255, 0.92);
   font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
   font-size: 0.95rem;
-  line-height: 1.45;
+  line-height: 2.85rem;
   letter-spacing: 0.01em;
   text-align: left;
   outline: none;
@@ -469,11 +470,12 @@ button:disabled {
 
 .transcript-entry-actions {
   position: absolute;
+  top: 50%;
   right: 0.45rem;
-  bottom: 0.45rem;
   display: flex;
   align-items: center;
   gap: 0.55rem;
+  transform: translateY(-50%);
 }
 
 .transcript-try-sample {
@@ -530,28 +532,85 @@ button.transcript-try-sample:hover:not(:disabled) {
 
 .transcript-toolbar {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.15rem;
   pointer-events: auto;
+}
+
+.transcript-panel.is-empty .transcript-toolbar {
+  justify-content: flex-start;
+}
+
+/* Same slot as the mic — typing replaces Use voice above the strip. */
+.transcript-typing-line {
+  max-width: min(36rem, calc(100vw - 2.5rem));
+  padding: 0.15rem 0.4rem;
+  font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
+  font-size: 1.05rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.94);
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.transcript-typing-word::after {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 1em;
+  margin-left: 1px;
+  background: rgba(255, 255, 255, 0.85);
+  vertical-align: text-bottom;
+  animation: transcript-caret-blink 1s steps(1) infinite;
+}
+
+@keyframes transcript-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.transcript-type-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .transcript-body {
   flex: 1;
   min-width: 0;
+  width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   pointer-events: auto;
-  /* Soft dissolve — short on the mic side, longer on the trailing edge. */
   -webkit-mask-image: linear-gradient(
     to right,
     transparent 0%,
-    #000 0.85rem,
-    #000 calc(100% - 2.5rem),
+    #000 1.25rem,
+    #000 calc(100% - 1.25rem),
     transparent 100%
   );
   mask-image: linear-gradient(
     to right,
     transparent 0%,
-    #000 0.85rem,
-    #000 calc(100% - 2.5rem),
+    #000 1.25rem,
+    #000 calc(100% - 1.25rem),
     transparent 100%
   );
   scrollbar-width: none;
