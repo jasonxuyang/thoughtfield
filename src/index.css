@@ -986,3 +986,72 @@ html.has-custom-cursor .node-detail-tip-label {
     padding: 1.5rem 1rem max(0.85rem, env(safe-area-inset-bottom));
   }
 }
+
+/* —— Mobile gate —— */
+
+.mobile-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: grid;
+  align-content: end;
+  justify-items: start;
+  padding: max(1.5rem, env(safe-area-inset-top))
+    max(1.5rem, env(safe-area-inset-right))
+    max(1.5rem, env(safe-area-inset-bottom))
+    max(1.5rem, env(safe-area-inset-left));
+  background: #000;
+  color: #fff;
+}
+
+.mobile-gate__stack {
+  width: min(22rem, 100%);
+  display: grid;
+  gap: 0.65rem;
+  justify-items: start;
+}
+
+.mobile-gate__body {
+  margin: 0;
+  font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
+  font-size: 0.95rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #fff;
+}
+
+.mobile-gate__pour {
+  /* Packed 6-frame strip: public/coffee-steam.png (744×220, cell 124×220). */
+  --pour-w: 72px;
+  --pour-h: 128px;
+  --pour-frames: 6;
+  display: block;
+  width: var(--pour-w);
+  height: var(--pour-h);
+  background-image: url("/coffee-steam.png");
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: calc(var(--pour-w) * var(--pour-frames)) var(--pour-h);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  animation: mobile-gate-pour-frames 0.84s steps(6) infinite;
+}
+
+.mobile-gate__pour:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 4px;
+}
+
+@keyframes mobile-gate-pour-frames {
+  to {
+    background-position: calc(-1 * var(--pour-w) * var(--pour-frames)) 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-gate__pour {
+    animation: none;
+  }
+}
