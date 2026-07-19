@@ -10,6 +10,8 @@
 
 [Try it](https://thoughtfield.jasonxuyang.com) · [How to use it](#using-it) · [How it works](#what-is-happening-locally)
 
+![Thoughtfield demo](public/demo.gif)
+
 ---
 
 ## Using it
