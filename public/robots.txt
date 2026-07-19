@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Host: thoughtfield.jasonxuyang.com
+Sitemap: https://thoughtfield.jasonxuyang.com/sitemap.xml

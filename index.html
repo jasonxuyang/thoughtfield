@@ -2,18 +2,117 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="color-scheme" content="dark" />
+
+    <title>Thoughtfield — local speech-to-graph field</title>
+    <meta
+      name="description"
+      content="Thoughtfield turns speech into a living graph of words and ideas using on-device transcription and semantic connections in your browser."
+    />
+    <meta name="application-name" content="Thoughtfield" />
+    <meta name="author" content="Jason Yang" />
+    <link rel="author" href="https://jasonxuyang.com" />
+    <meta name="creator" content="Jason Yang" />
+    <meta name="publisher" content="Jason Yang" />
+    <meta
+      name="keywords"
+      content="Thoughtfield,Jason Yang,jasonxuyang,Whisper,speech-to-text,word graph,semantic graph,browser ML,local-first,WebGPU"
+    />
+    <meta name="robots" content="index, follow" />
+    <meta
+      name="googlebot"
+      content="index, follow, max-video-preview:-1, max-image-preview:large, max-snippet:-1"
+    />
+    <meta name="category" content="technology" />
+    <meta name="format-detection" content="telephone=no, address=no, email=no" />
+    <link rel="canonical" href="https://thoughtfield.jasonxuyang.com/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="Thoughtfield" />
+    <meta
+      property="og:title"
+      content="Thoughtfield — local speech-to-graph field"
+    />
+    <meta
+      property="og:description"
+      content="Thoughtfield turns speech into a living graph of words and ideas using on-device transcription and semantic connections in your browser."
+    />
+    <meta property="og:url" content="https://thoughtfield.jasonxuyang.com/" />
+    <meta
+      property="og:image"
+      content="https://thoughtfield.jasonxuyang.com/og-image.png"
+    />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Thoughtfield — local speech-to-graph field"
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Thoughtfield — local speech-to-graph field"
+    />
+    <meta
+      name="twitter:description"
+      content="Thoughtfield turns speech into a living graph of words and ideas using on-device transcription and semantic connections in your browser."
+    />
+    <meta
+      name="twitter:image"
+      content="https://thoughtfield.jasonxuyang.com/og-image.png"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="Thoughtfield — local speech-to-graph field"
+    />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
-    <title>Thoughtfield</title>
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebApplication",
+            "@id": "https://thoughtfield.jasonxuyang.com/#app",
+            "name": "Thoughtfield",
+            "url": "https://thoughtfield.jasonxuyang.com",
+            "description": "Thoughtfield turns speech into a living graph of words and ideas using on-device transcription and semantic connections in your browser.",
+            "applicationCategory": "BrowserApplication",
+            "operatingSystem": "Any",
+            "browserRequirements": "Requires a modern browser with WebGPU or WebAssembly support",
+            "inLanguage": "en-US",
+            "author": { "@id": "https://jasonxuyang.com/#person" },
+            "creator": { "@id": "https://jasonxuyang.com/#person" },
+            "isPartOf": { "@id": "https://jasonxuyang.com/#website" },
+            "sameAs": ["https://github.com/jasonxuyang/thoughtfield"]
+          },
+          {
+            "@type": "Person",
+            "@id": "https://jasonxuyang.com/#person",
+            "name": "Jason Yang",
+            "alternateName": "jasonxuyang",
+            "url": "https://jasonxuyang.com"
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,7 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app/App";
+import { SITE_TITLE } from "./site";
 import "./index.css";
+
+document.title = SITE_TITLE;
 
 /** Trackpad pinch is ctrl/meta+wheel — block page zoom so the canvas can own it. */
 function preventBrowserZoom(event: WheelEvent): void {

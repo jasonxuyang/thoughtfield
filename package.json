@@ -3,6 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "license": "MIT",
+  "description": "Local speech-to-graph field in the browser.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jasonxuyang/thoughtfield.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
