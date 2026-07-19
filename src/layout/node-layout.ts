@@ -6,7 +6,9 @@ import { clampVelocity } from "./layout-config";
 const REPULSION_CELL = 220;
 const REPULSION_RANGE = REPULSION_CELL * 1.6;
 /** Soft-cap summed forces so overlap spikes don't yank nodes. */
-const MAX_NODE_FORCE = 22;
+const MAX_NODE_FORCE = 10;
+/** Softens 1/r² near-field spikes (was `+ 1`). */
+const REPULSION_SOFTEN = 90;
 
 function edgeDistance(combinedWeight: number): number {
   return (
@@ -110,7 +112,8 @@ export function stepNodeLayout(
 
           const nx = dx / dist;
           const ny = dy / dist;
-          const repulsion = LAYOUT_CONFIG.nodeRepulsion / (dist * dist + 1);
+          const repulsion =
+            LAYOUT_CONFIG.nodeRepulsion / (dist * dist + REPULSION_SOFTEN);
           const fb = forces.get(other.id)!;
           fa.fx -= nx * repulsion;
           fa.fy -= ny * repulsion;
@@ -121,7 +124,7 @@ export function stepNodeLayout(
             (node.textWidth + other.textWidth) * 0.35 +
             LAYOUT_CONFIG.nodeRadius * 0.2;
           if (dist < minDist) {
-            const push = (minDist - dist) * 0.28;
+            const push = (minDist - dist) * 0.16;
             fa.fx -= nx * push;
             fa.fy -= ny * push;
             fb.fx += nx * push;
@@ -169,6 +172,7 @@ export function stepNodeLayout(
     fb.fy -= ny * spring;
   }
 
+  const sleep = LAYOUT_CONFIG.velocitySleep;
   for (const node of nodes) {
     const force = forces.get(node.id)!;
     const forceMag = Math.hypot(force.fx, force.fy);
@@ -182,6 +186,12 @@ export function stepNodeLayout(
     const clamped = clampVelocity(node.vx, node.vy);
     node.vx = clamped.vx;
     node.vy = clamped.vy;
+    // Park fully once the chatter is below the sleep floor.
+    if (Math.hypot(node.vx, node.vy) < sleep) {
+      node.vx = 0;
+      node.vy = 0;
+      continue;
+    }
     node.x += node.vx * dt;
     node.y += node.vy * dt;
   }

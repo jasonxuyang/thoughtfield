@@ -109,21 +109,24 @@ export const LAYOUT_CONFIG = {
   communityAffinityColocation: 0.3,
   tickIntervalMs: 32,
   /** Softer cluster–cluster push — hard spikes read as layout pops. */
-  communityRepulsion: 18_000,
-  communitySpringStrength: 0.045,
+  communityRepulsion: 14_000,
+  communitySpringStrength: 0.035,
   /** Glide words toward their community (was snappy on recluster). */
-  nodeAnchorAttraction: 0.09,
+  nodeAnchorAttraction: 0.05,
   /** Cross-community bridges should not collapse clusters. */
   nodeBridgeAttraction: 0,
-  nodeRepulsion: 900,
-  nodeSpringStrength: 0.045,
+  /** Pairwise push — keep mild so close spheres don't chatter. */
+  nodeRepulsion: 480,
+  nodeSpringStrength: 0.028,
   /** Springs between different communities are scaled by this. */
-  crossCommunitySpringScale: 0.12,
+  crossCommunitySpringScale: 0.1,
   /** Higher damping = less oscillation after force spikes. */
-  damping: 0.9,
-  maxVelocity: 7,
+  damping: 0.94,
+  maxVelocity: 3.2,
   /** Community anchors share the same velocity clamp / damping. */
-  communityMaxVelocity: 5,
+  communityMaxVelocity: 2.8,
+  /** Kill residual micro-motion once nearly settled. */
+  velocitySleep: 0.12,
 };
 
 /** Idle field-fit, focus chase, and sticky-pan drift compensation. */

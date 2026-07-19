@@ -159,8 +159,8 @@ export class WordDisplay {
     cameraScale = 1,
   ): void {
     const seen = new Set<string>();
-    // Slightly softer than before — hides residual layout micro-jitter.
-    const positionLerp = 1 - Math.exp(-dt * 8);
+    // Soft follow — hides residual layout micro-jitter on letter shells.
+    const positionLerp = 1 - Math.exp(-dt * 5);
     let newSphereBudget = RENDER_BUDGET_CONFIG.maxNewSpheresPerFrame;
     const zoomLift = farZoomRestLift(cameraScale);
     // Far-out spheres are tiny on black — raise the rest floor so the field reads.

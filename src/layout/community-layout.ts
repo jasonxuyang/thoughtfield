@@ -10,10 +10,10 @@ import {
 import { clampVelocity, LAYOUT_CONFIG } from "./layout-config";
 
 /** Soft tether toward member COM when members drift far from the anchor. */
-const MEMBER_TETHER = 0.03;
-const MEMBER_TETHER_MIN_DIST = 64;
+const MEMBER_TETHER = 0.025;
+const MEMBER_TETHER_MIN_DIST = 72;
 /** Cap per-tick force so overlap / repulsion never pops the field. */
-const MAX_COMMUNITY_FORCE = 18;
+const MAX_COMMUNITY_FORCE = 12;
 
 export function stepCommunityLayout(
   communities: Community[],
@@ -102,8 +102,16 @@ export function stepCommunityLayout(
     );
     community.anchorVx = clamped.vx;
     community.anchorVy = clamped.vy;
-    community.anchorX += community.anchorVx * dt;
-    community.anchorY += community.anchorVy * dt;
+    if (
+      Math.hypot(community.anchorVx, community.anchorVy) <
+      LAYOUT_CONFIG.velocitySleep
+    ) {
+      community.anchorVx = 0;
+      community.anchorVy = 0;
+    } else {
+      community.anchorX += community.anchorVx * dt;
+      community.anchorY += community.anchorVy * dt;
+    }
 
     const memberCom = memberSpatialCentroid(community.nodeIds, nodes, true);
     if (memberCom) {
