@@ -73,6 +73,9 @@ async function loadModel(): Promise<void> {
     },
   });
 
+  // Transformers.js reports per-file progress that resets; keep a peak so the
+  // boot bar never jumps backwards between shards.
+  let peakProgress = 0;
   const progressCallback = (progress: {
     status?: string;
     progress?: number;
@@ -80,12 +83,13 @@ async function loadModel(): Promise<void> {
   }) => {
     const value =
       typeof progress.progress === "number" ? progress.progress / 100 : 0.1;
+    peakProgress = Math.min(0.99, Math.max(peakProgress, value));
     post({
       type: "progress",
       progress: {
         model: "transcription",
         status: "loading",
-        progress: Math.min(0.99, Math.max(0, value)),
+        progress: peakProgress,
         message: progress.file
           ? `Downloading ${progress.file}`
           : progress.status ?? "Loading…",

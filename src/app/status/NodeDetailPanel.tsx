@@ -43,8 +43,8 @@ const TOOLTIPS = {
   affinity:
     "What pulls this word toward others — shared meaning, or shared place in the transcript.",
   semantic: "Drawn together by meaning — ideas that belong with each other.",
-  colocation:
-    "Drawn together by proximity — words that sit near each other in the transcript.",
+  proximity:
+    "Drawn together by place in the transcript — words that sit near each other as you speak.",
   connected: "Nearby companions in the field. Tap one to step into it.",
 } as const;
 
@@ -108,14 +108,14 @@ function AffinityBar({ semanticRatio }: { semanticRatio: number }) {
     0,
     Math.min(100, Math.round(semanticRatio * 100)),
   );
-  const colocation = 100 - semantic;
+  const proximity = 100 - semantic;
 
   return (
     <div className="node-detail-affinity">
       <div
         className="node-detail-affinity-track"
         role="img"
-        aria-label={`${semantic}% semantic, ${colocation}% colocation`}
+        aria-label={`${semantic}% semantic, ${proximity}% proximity`}
       >
         <span
           className="node-detail-affinity-semantic"
@@ -123,7 +123,7 @@ function AffinityBar({ semanticRatio }: { semanticRatio: number }) {
         />
         <span
           className="node-detail-affinity-colocation"
-          style={{ width: `${colocation}%` }}
+          style={{ width: `${proximity}%` }}
         />
       </div>
       <div className="node-detail-affinity-legend">
@@ -136,9 +136,9 @@ function AffinityBar({ semanticRatio }: { semanticRatio: number }) {
         </span>
         <span>
           <i className="node-detail-affinity-swatch is-colocation" aria-hidden />
-          {colocation}%{" "}
-          <Tip text={TOOLTIPS.colocation}>
-            <span className="node-detail-tip-label">colocation</span>
+          {proximity}%{" "}
+          <Tip text={TOOLTIPS.proximity}>
+            <span className="node-detail-tip-label">proximity</span>
           </Tip>
         </span>
       </div>

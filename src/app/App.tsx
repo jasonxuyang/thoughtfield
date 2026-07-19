@@ -43,7 +43,10 @@ import type {
 } from "../workers/worker-messages";
 import { CommittedWordIngestQueue } from "./ingest-queue";
 import { BootScreen, type FieldLoadProgress } from "./BootScreen";
-import { CustomCursor } from "./controls/CustomCursor";
+import {
+  CustomCursor,
+  type FocusLockTarget,
+} from "./controls/CustomCursor";
 import { HudTooltip } from "./controls/HudTooltip";
 import {
   buildNodeDetail,
@@ -173,10 +176,15 @@ export function App() {
   });
 
   const stopIdleTour = useEffectEvent(() => {
+    const wasActive = idleTourActiveRef.current;
     idleTourActiveRef.current = false;
     idleTourDrivingRef.current = false;
     clearIdleTourTimer();
-    transcriptReleaseCursorLockRef.current?.();
+    // Only drop a tour-owned outline — keyboard nav also calls selectNode →
+    // stopIdleTour, and must keep the lock it just acquired.
+    if (wasActive) {
+      transcriptReleaseCursorLockRef.current?.();
+    }
   });
 
   const bumpIdleActivity = useEffectEvent((options?: { force?: boolean }) => {
@@ -426,7 +434,14 @@ export function App() {
       }
       const gateBoot = fieldBootPendingRef.current;
       if (gateBoot) {
-        setFieldProgress({ status: "loading", progress: 0.05 });
+        setFieldProgress((current) =>
+          current.status !== "loading"
+            ? current
+            : {
+                status: "loading",
+                progress: Math.max(current.progress, 0.05),
+              },
+        );
       }
       const preview =
         prebuilt ??
@@ -434,10 +449,17 @@ export function App() {
           gateBoot
             ? (progress) => {
                 // Reserve the last stretch for live canvas settle after hydrate.
-                setFieldProgress({
-                  status: "loading",
-                  progress: 0.05 + progress * 0.7,
-                });
+                setFieldProgress((current) =>
+                  current.status !== "loading"
+                    ? current
+                    : {
+                        status: "loading",
+                        progress: Math.max(
+                          current.progress,
+                          0.05 + progress * 0.7,
+                        ),
+                      },
+                );
               }
             : undefined,
         ));
@@ -451,7 +473,14 @@ export function App() {
       previewActivateIndexRef.current = 0;
       pixiRef.current?.setInteractionEnabled(false);
       if (gateBoot) {
-        setFieldProgress({ status: "loading", progress: 0.78 });
+        setFieldProgress((current) =>
+          current.status !== "loading"
+            ? current
+            : {
+                status: "loading",
+                progress: Math.max(current.progress, 0.78),
+              },
+        );
       }
       postGraph({
         type: "hydrate",
@@ -574,9 +603,18 @@ export function App() {
           const settled =
             elapsed >= 750 &&
             (energy < 18 || elapsed >= 3_200);
-          setFieldProgress({
-            status: "loading",
-            progress: Math.min(0.98, 0.78 + Math.min(1, elapsed / 3_200) * 0.2),
+          setFieldProgress((current) => {
+            if (current.status !== "loading") {
+              return current;
+            }
+            const next = Math.min(
+              0.98,
+              0.78 + Math.min(1, elapsed / 3_200) * 0.2,
+            );
+            return {
+              status: "loading",
+              progress: Math.max(current.progress, next),
+            };
           });
           if (settled) {
             markFieldSettled();
@@ -1002,11 +1040,11 @@ export function App() {
     [],
   );
   /** Transcript arrow-nav → custom cursor outline lock. */
-  const transcriptFocusAnchorRef = useRef<(() => HTMLElement | null) | null>(
-    null,
-  );
-  const getTranscriptFocusAnchor = useCallback(
-    () => transcriptFocusAnchorRef.current?.() ?? null,
+  const transcriptFocusLockTargetRef = useRef<
+    (() => FocusLockTarget | null) | null
+  >(null);
+  const getTranscriptFocusLockTarget = useCallback(
+    () => transcriptFocusLockTargetRef.current?.() ?? null,
     [],
   );
 
@@ -1014,7 +1052,7 @@ export function App() {
     <div className="app-shell">
       <CustomCursor
         queryNodeTarget={queryNodeCursorTarget}
-        getFocusAnchor={getTranscriptFocusAnchor}
+        getFocusLockTarget={getTranscriptFocusLockTarget}
       />
       <BootScreen
         transcription={transcription}
@@ -1095,7 +1133,7 @@ export function App() {
             }}
             activationSinkRef={transcriptActivationRef}
             scrollToLabelRef={transcriptScrollRef}
-            focusAnchorGetterRef={transcriptFocusAnchorRef}
+            focusLockTargetGetterRef={transcriptFocusLockTargetRef}
             releaseCursorLockRef={transcriptReleaseCursorLockRef}
           />
         </div>

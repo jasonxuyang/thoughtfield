@@ -110,15 +110,14 @@ html.has-custom-cursor [contenteditable=""] {
   transition: opacity 140ms ease;
 }
 
-/* Button / node: outline only — same morph ring, no inner dot. */
+/* Button / node: solid outline (not difference-blended). Keep the inner
+   dot so the pointer stays visible inside the morph. */
 .custom-cursor[data-mode="button"],
 .custom-cursor[data-mode="node"] {
   mix-blend-mode: normal;
 }
 
-.custom-cursor[data-mode="button"] .custom-cursor-dot,
 .custom-cursor[data-mode="button"] .custom-cursor-help,
-.custom-cursor[data-mode="node"] .custom-cursor-dot,
 .custom-cursor[data-mode="node"] .custom-cursor-help {
   opacity: 0;
 }

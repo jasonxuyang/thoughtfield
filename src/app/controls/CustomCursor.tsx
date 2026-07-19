@@ -12,16 +12,28 @@ export type NodeCursorTarget = {
   radius: number;
 };
 
+/** Outline box for keyboard / tour focus lock (screen coordinates). */
+export type FocusLockTarget = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius: number;
+  /** Stable id for the focused occurrence — changes trigger a cursor snap. */
+  key: string | number;
+};
+
 type CustomCursorProps = {
   queryNodeTarget: (
     clientX: number,
     clientY: number,
   ) => NodeCursorTarget | null;
   /**
-   * Optional keyboard-focus lock (e.g. transcript arrow nav). When it returns
-   * an element, the cursor outlines that target until the pointer moves again.
+   * Optional keyboard/tour focus lock. While this returns a target, the cursor
+   * outlines that box even if the pointer is elsewhere (or the DOM node is
+   * briefly unmounted by virtualization).
    */
-  getFocusAnchor?: () => HTMLElement | null;
+  getFocusLockTarget?: () => FocusLockTarget | null;
   /**
    * When true, force-hide the cursor. Cleared on the next pointermove
    * (idle tour, etc.).
@@ -152,7 +164,7 @@ function easeToward(current: number, target: number, rate: number, dt: number) {
 
 export function CustomCursor({
   queryNodeTarget,
-  getFocusAnchor,
+  getFocusLockTarget,
   suppressedRef,
   onSuppressedReveal,
 }: CustomCursorProps) {
@@ -160,8 +172,8 @@ export function CustomCursor({
   const ringRef = useRef<HTMLDivElement | null>(null);
   const dotRef = useRef<HTMLDivElement | null>(null);
   const helpRef = useRef<HTMLDivElement | null>(null);
-  const getFocusAnchorRef = useRef(getFocusAnchor);
-  getFocusAnchorRef.current = getFocusAnchor;
+  const getFocusLockTargetRef = useRef(getFocusLockTarget);
+  getFocusLockTargetRef.current = getFocusLockTarget;
   const suppressedRefRef = useRef(suppressedRef);
   suppressedRefRef.current = suppressedRef;
   const onSuppressedRevealRef = useRef(onSuppressedReveal);
@@ -189,29 +201,53 @@ export function CustomCursor({
   });
   const enabledRef = useRef(false);
   const hasPointerSampleRef = useRef(false);
+  /** Last focus-lock key — when it changes, snap the cursor to the new word. */
+  const focusLockKeyRef = useRef<string | number | null>(null);
 
   const resolveTarget = useEffectEvent((clientX: number, clientY: number) => {
     if (!enabledRef.current) {
       modeRef.current = "hidden";
       stickyButtonRef.current = null;
+      focusLockKeyRef.current = null;
       return;
     }
 
     if (suppressedRefRef.current?.current) {
       modeRef.current = "hidden";
       stickyButtonRef.current = null;
+      focusLockKeyRef.current = null;
       return;
     }
 
-    // Keyboard focus lock (transcript arrows) — outline that word even if the
+    // Keyboard / tour focus lock — move the cursor onto that word even if the
     // pointer is elsewhere. Cleared by the provider on real pointer movement.
-    const focusAnchor = getFocusAnchorRef.current?.() ?? null;
-    if (focusAnchor && document.contains(focusAnchor)) {
+    const focusLock = getFocusLockTargetRef.current?.() ?? null;
+    if (focusLock) {
       stickyButtonRef.current = null;
       modeRef.current = "button";
-      targetRef.current = buttonTargetState(focusAnchor);
+      const nextTarget = {
+        x: focusLock.x,
+        y: focusLock.y,
+        width: focusLock.width,
+        height: focusLock.height,
+        radius: focusLock.radius,
+      };
+      targetRef.current = nextTarget;
+      // Literally relocate the cursor when the focused word changes.
+      if (focusLockKeyRef.current !== focusLock.key) {
+        focusLockKeyRef.current = focusLock.key;
+        dotVisualRef.current.x = nextTarget.x;
+        dotVisualRef.current.y = nextTarget.y;
+        ringVisualRef.current.x = nextTarget.x;
+        ringVisualRef.current.y = nextTarget.y;
+        ringVisualRef.current.width = nextTarget.width;
+        ringVisualRef.current.height = nextTarget.height;
+        ringVisualRef.current.radius = nextTarget.radius;
+        hasPointerSampleRef.current = true;
+      }
       return;
     }
+    focusLockKeyRef.current = null;
 
     if (!pointerRef.current.inside) {
       modeRef.current = "hidden";
@@ -339,13 +375,18 @@ export function CustomCursor({
       const ringRate = reduced ? 80 : LERP_RING;
       const sizeRate = reduced ? 80 : LERP_SIZE;
 
-      // Dot locks harder to magnetic targets so gravity feels snappy;
-      // the ring still eases in more slowly.
+      // Ring morphs onto magnetic targets (buttons / nodes). The inner dot
+      // keeps tracking the pointer so you can still see where you are inside
+      // a glued button outline. Focus-lock snaps are the exception — both
+      // layers relocate onto the focused word.
+      const focusLocked = focusLockKeyRef.current !== null;
       const stickyTarget = mode === "button" || mode === "node";
-      const dotPull = stickyTarget ? dotRate * 1.35 : dotRate;
+      const dotTx = stickyTarget && !focusLocked ? px : target.x;
+      const dotTy = stickyTarget && !focusLocked ? py : target.y;
+      const dotPull = focusLocked ? dotRate * 1.35 : dotRate;
 
-      dotVisual.x = easeToward(dotVisual.x, target.x, dotPull, dt);
-      dotVisual.y = easeToward(dotVisual.y, target.y, dotPull, dt);
+      dotVisual.x = easeToward(dotVisual.x, dotTx, dotPull, dt);
+      dotVisual.y = easeToward(dotVisual.y, dotTy, dotPull, dt);
 
       ringVisual.x = easeToward(ringVisual.x, target.x, ringRate, dt);
       ringVisual.y = easeToward(ringVisual.y, target.y, ringRate, dt);

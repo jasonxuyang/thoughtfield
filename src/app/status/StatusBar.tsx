@@ -11,6 +11,7 @@ import { CAMERA_FOLLOW } from "../../config/algorithms";
 import { THOUGHTFIELD_BLURB } from "../../demo/entry-preview-graph";
 import { activationColorCss } from "../../rendering/activation-style";
 import { normalizeToken } from "../../transcription/normalization";
+import type { FocusLockTarget } from "../controls/CustomCursor";
 import { HudTooltip } from "../controls/HudTooltip";
 import { RecordButton } from "../controls/RecordButton";
 
@@ -20,6 +21,24 @@ const TRANSCRIPT_PADDING_START_PX = 8;
 const TRANSCRIPT_PADDING_END_PX = 20;
 /** Ignore scroll events from our own scrollToIndex for this long. */
 const PROGRAMMATIC_SCROLL_GUARD_MS = 1_400;
+/** Matches CustomCursor BUTTON_PAD so keyboard lock outlines the same way. */
+const CURSOR_FOCUS_PAD = 9;
+
+function focusLockTargetFromRect(
+  rect: DOMRect,
+  key: string | number,
+): FocusLockTarget {
+  // Match CustomCursor buttonTargetState: pad the box, keep the element's
+  // corner radius (+ pad). Transcript words are square — not a pill.
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+    width: rect.width + CURSOR_FOCUS_PAD * 2,
+    height: rect.height + CURSOR_FOCUS_PAD * 2,
+    radius: CURSOR_FOCUS_PAD,
+    key,
+  };
+}
 
 function estimateTokenWidth(raw: string): number {
   // Space Grotesk ~0.55em at 0.95rem ≈ 8.4px/char; floor for overscan safety.
@@ -124,6 +143,7 @@ function TranscriptWord({
   onHoverLeave,
   wordEls,
   activationsRef,
+  onFocusedElement,
 }: {
   raw: string;
   label: string | null;
@@ -140,6 +160,7 @@ function TranscriptWord({
   onHoverLeave: (label: string) => void;
   wordEls: Map<string, Set<HTMLElement>>;
   activationsRef: MutableRefObject<ReadonlyMap<string, number>>;
+  onFocusedElement?: (element: HTMLElement) => void;
 }) {
   const [phase, setPhase] = useState<BlockPhase>(() => {
     const cached = phaseCache.get(tokenKey);
@@ -202,6 +223,20 @@ function TranscriptWord({
       }
     };
   }, [label, hideText, wordEls, activationsRef]);
+
+  // Keep the custom-cursor focus lock pinned to this occurrence while mounted.
+  // Don't clear on unmount — a sibling may already own the ref; the getter
+  // validates data-index before using it.
+  useLayoutEffect(() => {
+    if (!focused || hideText || !onFocusedElement) {
+      return;
+    }
+    const node = elementRef.current;
+    if (!node) {
+      return;
+    }
+    onFocusedElement(node);
+  }, [focused, hideText, onFocusedElement, dataIndex]);
 
   return (
     <span
@@ -291,7 +326,7 @@ export function TranscriptPanel({
   onCursorLockRelease,
   activationSinkRef,
   scrollToLabelRef,
-  focusAnchorGetterRef,
+  focusLockTargetGetterRef,
   releaseCursorLockRef,
 }: {
   committed: string;
@@ -317,7 +352,9 @@ export function TranscriptPanel({
     ((label: string, options?: { lockCursor?: boolean }) => void) | null
   >;
   /** Lets the custom cursor outline the keyboard-focused transcript word. */
-  focusAnchorGetterRef: MutableRefObject<(() => HTMLElement | null) | null>;
+  focusLockTargetGetterRef: MutableRefObject<
+    (() => FocusLockTarget | null) | null
+  >;
   /** Imperative unlock (e.g. idle tour stopped). */
   releaseCursorLockRef?: MutableRefObject<(() => void) | null>;
 }) {
@@ -335,6 +372,10 @@ export function TranscriptPanel({
   focusedIndexRef.current = focusedIndex;
   /** After arrow-key nav, lock the custom cursor onto that word until pointer moves. */
   const cursorFocusLockRef = useRef(false);
+  /** Live DOM node for the focused occurrence (null while virtualized away). */
+  const focusedWordElRef = useRef<HTMLElement | null>(null);
+  /** Last good lock box — keeps the cursor parked while a word remounts. */
+  const lastFocusLockTargetRef = useRef<FocusLockTarget | null>(null);
   /** First pointer sample after a lock — used so tiny jitter doesn't unlock. */
   const cursorLockOriginRef = useRef<{ x: number; y: number } | null>(null);
   /**
@@ -345,6 +386,8 @@ export function TranscriptPanel({
   const lastUserScrollAtRef = useRef(0);
   /** Ignore scroll events until this timestamp (programmatic scrollToIndex). */
   const programmaticScrollUntilRef = useRef(0);
+  /** Prior canvas labels — live-edge scroll only when exactly one node lands. */
+  const prevCanvasLabelsRef = useRef<ReadonlySet<string>>(new Set());
   const wordElsRef = useRef(new Map<string, Set<HTMLElement>>());
   const activationsRef = useRef<ReadonlyMap<string, number>>(new Map());
   const [draft, setDraft] = useState("");
@@ -477,6 +520,7 @@ export function TranscriptPanel({
       if (index < 0) {
         return;
       }
+      focusedIndexRef.current = index;
       setFocusedIndex(index);
       if (options?.lockCursor) {
         cursorFocusLockRef.current = true;
@@ -496,6 +540,7 @@ export function TranscriptPanel({
       }
       cursorFocusLockRef.current = false;
       cursorLockOriginRef.current = null;
+      lastFocusLockTargetRef.current = null;
       // Tour locks without a selected label — drop the highlight with the lock.
       if (focusedLabel === null) {
         setFocusedIndex(null);
@@ -553,10 +598,13 @@ export function TranscriptPanel({
         return;
       }
 
+      // Sync immediately — CustomCursor reads this ref before React re-renders.
+      focusedIndexRef.current = index;
       setFocusedIndex(index);
+      // Select first: selectNode → stopIdleTour may clear a prior tour lock.
+      onSelectLabel(label);
       cursorFocusLockRef.current = true;
       cursorLockOriginRef.current = null;
-      onSelectLabel(label);
       // Single taps ease; held-key repeat stays instant so scrubbing doesn't
       // stack smooth scrolls across unmeasured virtual ranges.
       const behavior =
@@ -565,31 +613,97 @@ export function TranscriptPanel({
     },
   );
 
-  useEffect(() => {
-    focusAnchorGetterRef.current = () => {
-      if (!cursorFocusLockRef.current) {
-        return null;
-      }
-      const index = focusedIndexRef.current;
-      if (index === null) {
-        return null;
-      }
-      return document.querySelector<HTMLElement>(
-        `.transcript-word[data-index="${index}"]`,
+  const registerFocusedWordEl = useEffectEvent((element: HTMLElement) => {
+    focusedWordElRef.current = element;
+  });
+
+  const resolveFocusLockTarget = useEffectEvent((): FocusLockTarget | null => {
+    if (!cursorFocusLockRef.current) {
+      lastFocusLockTargetRef.current = null;
+      return null;
+    }
+    const index = focusedIndexRef.current;
+    if (index === null) {
+      return lastFocusLockTargetRef.current;
+    }
+
+    const live = focusedWordElRef.current;
+    if (
+      live &&
+      document.contains(live) &&
+      live.dataset.index === String(index)
+    ) {
+      const target = focusLockTargetFromRect(
+        live.getBoundingClientRect(),
+        index,
       );
+      lastFocusLockTargetRef.current = target;
+      return target;
+    }
+
+    const mounted = document.querySelector<HTMLElement>(
+      `.transcript-word[data-index="${index}"]`,
+    );
+    if (mounted) {
+      focusedWordElRef.current = mounted;
+      const target = focusLockTargetFromRect(
+        mounted.getBoundingClientRect(),
+        index,
+      );
+      lastFocusLockTargetRef.current = target;
+      return target;
+    }
+
+    // Word not mounted yet (smooth scroll / virtualization) — chase from layout.
+    const body = bodyRef.current;
+    if (!body) {
+      return lastFocusLockTargetRef.current;
+    }
+    const item = virtualizer.measurementsCache[index];
+    const size = item?.size ?? estimateTokenWidth(tokens[index]?.raw ?? "");
+    let start = item?.start;
+    if (start === undefined) {
+      // Build a cheap prefix estimate when the cache hasn't measured this index.
+      start = TRANSCRIPT_PADDING_START_PX;
+      for (let i = 0; i < index; i += 1) {
+        const measured = virtualizer.measurementsCache[i];
+        start +=
+          (measured?.size ?? estimateTokenWidth(tokens[i]?.raw ?? "")) +
+          TRANSCRIPT_WORD_GAP_PX;
+      }
+    }
+    const bodyRect = body.getBoundingClientRect();
+    const centerX = bodyRect.left - body.scrollLeft + start + size / 2;
+    const centerY = bodyRect.top + bodyRect.height / 2;
+    const wordHeight = Math.max(16, Math.min(bodyRect.height - 10, 28));
+    const target: FocusLockTarget = {
+      x: centerX,
+      y: centerY,
+      width: size + CURSOR_FOCUS_PAD * 2,
+      height: wordHeight + CURSOR_FOCUS_PAD * 2,
+      radius: CURSOR_FOCUS_PAD,
+      key: index,
     };
+    lastFocusLockTargetRef.current = target;
+    return target;
+  });
+
+  useEffect(() => {
+    focusLockTargetGetterRef.current = () => resolveFocusLockTarget();
     return () => {
-      if (focusAnchorGetterRef.current) {
-        focusAnchorGetterRef.current = null;
+      if (focusLockTargetGetterRef.current) {
+        focusLockTargetGetterRef.current = null;
       }
     };
-  }, [focusAnchorGetterRef]);
+  }, [focusLockTargetGetterRef]);
 
   useEffect(() => {
     if (!hasTranscript) {
       setFocusedIndex(null);
+      focusedIndexRef.current = null;
       cursorFocusLockRef.current = false;
       cursorLockOriginRef.current = null;
+      lastFocusLockTargetRef.current = null;
       return;
     }
 
@@ -704,7 +818,21 @@ export function TranscriptPanel({
   }, [scrollToLabelRef]);
 
   useEffect(() => {
-    if (tokens.length === 0) {
+    const prev = prevCanvasLabelsRef.current;
+    let added = 0;
+    for (const label of canvasLabels) {
+      if (!prev.has(label)) {
+        added += 1;
+        if (added > 1) {
+          break;
+        }
+      }
+    }
+    prevCanvasLabelsRef.current = canvasLabels;
+
+    // Follow the live edge only when a single new sphere appears — not when
+    // preview / restore hydrates many labels, or when transcript text grows.
+    if (added !== 1 || tokens.length === 0) {
       return;
     }
     // Don't yank the strip to the live edge while inspecting a word.
@@ -713,7 +841,7 @@ export function TranscriptPanel({
     }
     programmaticScrollUntilRef.current = performance.now() + 120;
     virtualizer.scrollToIndex(tokens.length - 1, { align: "end" });
-  }, [committed, pending, canvasLabels, tokens.length, virtualizer, focusedLabel]);
+  }, [canvasLabels, tokens.length, virtualizer, focusedLabel]);
 
   // Free-scroll the strip; after idle, ease back to the focused word
   // (mirrors canvas CAMERA_FOLLOW.idleReturnMs).
@@ -941,6 +1069,7 @@ export function TranscriptPanel({
                   onHoverLeave={handleHoverLeave}
                   wordEls={wordElsRef.current}
                   activationsRef={activationsRef}
+                  onFocusedElement={registerFocusedWordEl}
                 />
               );
             })}

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ModelLoadProgress } from "../workers/worker-messages";
 
 export type FieldLoadProgress = {
@@ -39,6 +40,12 @@ export function BootScreen({
   field,
   visible,
 }: BootScreenProps) {
+  /** Displayed progress never decreases while the boot overlay is up. */
+  const peakRef = useRef(0);
+  if (!visible) {
+    peakRef.current = 0;
+  }
+
   const fieldValue = fieldProgressValue(field);
   const parts =
     fieldValue === null
@@ -48,8 +55,14 @@ export function BootScreen({
           progressValue(embeddings),
           fieldValue,
         ];
-  const overall =
+  const rawOverall =
     parts.reduce((sum, value) => sum + value, 0) / Math.max(1, parts.length);
+  const overall = visible
+    ? Math.max(peakRef.current, rawOverall)
+    : rawOverall;
+  if (visible) {
+    peakRef.current = overall;
+  }
   const percent = Math.round(overall * 100);
 
   return (
