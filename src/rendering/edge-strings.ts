@@ -3,8 +3,9 @@ import type { RenderEdge, RenderNode } from "../graph/graph-types";
 import { VIZ_EDGE_CONFIG } from "../config/algorithms";
 import {
   ACTIVATION_INACTIVE_COLOR,
-  activationColor,
+  activationColorAtZoom,
   activationHeat,
+  farZoomRestLift,
 } from "./activation-style";
 import { LETTER_BITMAP_FONT } from "./bitmap-fonts";
 import {
@@ -86,12 +87,14 @@ export class EdgeStringDisplay {
     displayPositions: Map<string, { x: number; y: number }>,
     dt: number,
     viewport: WorldBounds | null = null,
+    cameraScale = 1,
   ): void {
     this.nodeIndex.clear();
     for (const node of nodes) {
       this.nodeIndex.set(node.id, node);
     }
 
+    const zoomLift = farZoomRestLift(cameraScale);
     const ranked: RenderEdge[] = [];
     for (const edge of edges) {
       const a = this.nodeIndex.get(edge.sourceId);
@@ -206,9 +209,12 @@ export class EdgeStringDisplay {
 
       const used = letterCountForDistance(dist, morph.spacing);
       this.ensureLetterCount(glyph, used);
-      const tint = activationColor(heat);
+      const tint = activationColorAtZoom(heat, cameraScale);
       const baseAlpha =
-        0.12 + morph.weight * 0.22 + activationHeat(heat) * 0.75;
+        0.12 +
+        zoomLift * 0.16 +
+        morph.weight * 0.22 +
+        activationHeat(heat) * 0.75;
 
       glyph.root.position.set(a.x, a.y);
       glyph.root.rotation = Math.atan2(dy, dx);

@@ -9,8 +9,9 @@ import { interpolateColor } from "../embeddings/vector-math";
 import {
   ACTIVATION_ACTIVE_COLOR,
   ACTIVATION_INACTIVE_COLOR,
-  activationColor,
+  activationColorAtZoom,
   activationHeat,
+  farZoomRestLift,
 } from "./activation-style";
 import { LETTER_BITMAP_FONT } from "./bitmap-fonts";
 import {
@@ -155,10 +156,16 @@ export class WordDisplay {
     nodes: RenderNode[],
     dt: number,
     viewport: WorldBounds | null = null,
+    cameraScale = 1,
   ): void {
     const seen = new Set<string>();
-    const positionLerp = 1 - Math.exp(-dt * 12);
+    // Slightly softer than before — hides residual layout micro-jitter.
+    const positionLerp = 1 - Math.exp(-dt * 8);
     let newSphereBudget = RENDER_BUDGET_CONFIG.maxNewSpheresPerFrame;
+    const zoomLift = farZoomRestLift(cameraScale);
+    // Far-out spheres are tiny on black — raise the rest floor so the field reads.
+    const restAlphaFloor = 0.36 + zoomLift * 0.38;
+    const heatAlphaGain = 0.62 - zoomLift * 0.18;
 
     for (const node of nodes) {
       // Wait for contextual embedding before showing the letter-sphere.
@@ -264,7 +271,7 @@ export class WordDisplay {
 
       const appear = easeOutCubic(glyph.age / APPEAR_SECONDS);
       const heat = activationHeat(node.activation);
-      const tint = activationColor(node.activation);
+      const tint = activationColorAtZoom(node.activation, cameraScale);
       const tilt = morphology.tilt;
       // Cheap activation bloom — bigger punch at the peak.
       const bloom = 1 + heat * 0.28;
@@ -293,12 +300,12 @@ export class WordDisplay {
         if (tintChanged) {
           letter.text.tint = tint;
         }
-        // Rest quieter; peak near-full white.
+        // Rest quieter; peak near-full white. Far zoom lifts the rest floor.
         letter.text.alpha = Math.min(
           1,
           appear *
             particle.alphaScale *
-            (0.36 + projected.scale * 0.32 + heat * 0.62),
+            (restAlphaFloor + projected.scale * 0.32 + heat * heatAlphaGain),
         );
 
         if (shouldSort) {

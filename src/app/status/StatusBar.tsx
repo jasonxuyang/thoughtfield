@@ -404,6 +404,7 @@ export function TranscriptPanel({
   onPasteTranscript,
   onTypedPendingChange,
   onCommitTypedWords,
+  onComposerFocus,
   samples,
   onTrySample,
   onActivateLabel,
@@ -430,6 +431,8 @@ export function TranscriptPanel({
   onPasteTranscript: (text: string) => void;
   onTypedPendingChange: (text: string) => void;
   onCommitTypedWords: (text: string) => void;
+  /** Text input / mic — clear any focused graph node. */
+  onComposerFocus?: () => void;
   samples: ReadonlyArray<{ id: string; label: string; tooltip: string }>;
   onTrySample: (sampleId: string) => void;
   onActivateLabel: (label: string) => void;
@@ -1591,6 +1594,9 @@ export function TranscriptPanel({
             autoCorrect="off"
             rows={1}
             aria-label="Type into transcript"
+            onFocus={() => {
+              onComposerFocus?.();
+            }}
             onChange={(event) => {
               onTypedPendingChange(event.target.value);
             }}

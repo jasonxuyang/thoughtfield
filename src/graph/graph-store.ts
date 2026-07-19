@@ -3,6 +3,7 @@ import {
   CONTEXT_CONFIG,
   DEFAULT_SETTINGS,
   EDGE_CONFIG,
+  LAYOUT_CONFIG,
   VIZ_EDGE_CONFIG,
   type AlgorithmSettings,
 } from "../config/algorithms";
@@ -638,7 +639,9 @@ export class GraphStore {
       this.communities.delete(retiredId);
     }
 
+    const previousCommunityByNode = new Map<string, string | null>();
     for (const node of this.nodes.values()) {
+      previousCommunityByNode.set(node.id, node.communityId);
       node.communityId = null;
     }
 
@@ -653,6 +656,8 @@ export class GraphStore {
         activation: existing?.activation ?? 0,
         anchorX: existing?.anchorX ?? 0,
         anchorY: existing?.anchorY ?? 0,
+        anchorVx: existing?.anchorVx ?? 0,
+        anchorVy: existing?.anchorVy ?? 0,
         radius,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
@@ -672,12 +677,20 @@ export class GraphStore {
         });
         community.anchorX = anchor.x;
         community.anchorY = anchor.y;
+        community.anchorVx = 0;
+        community.anchorVy = 0;
       }
 
       for (const nodeId of stabilized.nodeIds) {
         const node = this.nodes.get(nodeId);
         if (node) {
+          const priorCommunity = previousCommunityByNode.get(node.id) ?? null;
           node.communityId = community.id;
+          // Reassignment: bleed velocity so the new anchor pull doesn't yank.
+          if (priorCommunity !== community.id) {
+            node.vx *= 0.35;
+            node.vy *= 0.35;
+          }
           // Nodes waiting on first placement finally join a community.
           if (!node.graphPlaced && node.normalizedEmbedding) {
             this.placeNodeFromGraph(node);
@@ -735,12 +748,19 @@ export class GraphStore {
     decayActivation(this.nodes.values(), deltaMs);
     this.holdPinnedActivation();
 
+    // Normalize to the nominal tick so hitches don't apply a double shove,
+    // and short frames don't starve the settle.
+    const dt = Math.min(
+      1.75,
+      Math.max(0.35, deltaMs / LAYOUT_CONFIG.tickIntervalMs),
+    );
+
     if (this.communities.size > 0) {
       stepCommunityLayout(
         [...this.communities.values()],
         [...this.edges.values()],
         this.nodes,
-        1,
+        dt,
       );
     }
 
@@ -748,7 +768,7 @@ export class GraphStore {
       [...this.nodes.values()],
       [...this.edges.values()],
       this.communities,
-      1,
+      dt,
     );
   }
 
@@ -990,6 +1010,8 @@ export class GraphStore {
     for (const community of data.communities) {
       this.communities.set(community.id, {
         ...community,
+        anchorVx: community.anchorVx ?? 0,
+        anchorVy: community.anchorVy ?? 0,
         centroidEmbedding: community.centroidEmbedding
           ? new Float32Array(community.centroidEmbedding)
           : null,

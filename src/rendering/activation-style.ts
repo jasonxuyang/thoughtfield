@@ -1,8 +1,26 @@
 import { interpolateColor } from "../embeddings/vector-math";
 
 /** Cool rest gray — bright enough to read, still leaves room for the white flash. */
-export const ACTIVATION_INACTIVE_COLOR = 0x6a707a;
+export const ACTIVATION_INACTIVE_COLOR = 0x7a8492;
+/** Rest gray when the camera is fully zoomed out (tiny on-screen spheres). */
+export const ACTIVATION_INACTIVE_FAR_COLOR = 0xa8b0bc;
 export const ACTIVATION_ACTIVE_COLOR = 0xffffff;
+
+/**
+ * 0 near focus zoom (≥ ~1), 1 when pulled fully out (≤ ~0.4).
+ * Lifts rest brightness/opacity so the field stays visible at overview scales.
+ */
+export function farZoomRestLift(cameraScale: number): number {
+  const near = 1.05;
+  const far = 0.38;
+  if (cameraScale >= near) {
+    return 0;
+  }
+  if (cameraScale <= far) {
+    return 1;
+  }
+  return (near - cameraScale) / (near - far);
+}
 
 /**
  * Visual heat from raw activation.
@@ -17,6 +35,27 @@ export function activationHeat(activation: number): number {
 export function activationColor(activation: number): number {
   return interpolateColor(
     ACTIVATION_INACTIVE_COLOR,
+    ACTIVATION_ACTIVE_COLOR,
+    activationHeat(activation),
+  );
+}
+
+/** Rest→active tint, brightened as the camera zooms out. */
+export function activationColorAtZoom(
+  activation: number,
+  cameraScale: number,
+): number {
+  const lift = farZoomRestLift(cameraScale);
+  const rest =
+    lift <= 0
+      ? ACTIVATION_INACTIVE_COLOR
+      : interpolateColor(
+          ACTIVATION_INACTIVE_COLOR,
+          ACTIVATION_INACTIVE_FAR_COLOR,
+          lift,
+        );
+  return interpolateColor(
+    rest,
     ACTIVATION_ACTIVE_COLOR,
     activationHeat(activation),
   );

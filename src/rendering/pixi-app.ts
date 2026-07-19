@@ -854,7 +854,12 @@ export class PixiGraphApp {
       this.app.renderer.width,
       this.app.renderer.height,
     );
-    this.words.update(this.snapshot.nodes, dt, viewport);
+    this.words.update(
+      this.snapshot.nodes,
+      dt,
+      viewport,
+      this.camera.scale,
+    );
     const displayPositions = this.words.getDisplayPositions();
     this.edgeStrings.update(
       this.snapshot.edges,
@@ -862,6 +867,7 @@ export class PixiGraphApp {
       displayPositions,
       dt,
       viewport,
+      this.camera.scale,
     );
     this.debug.update(this.snapshot, this.settings, displayPositions);
     this.updateHomeCamera(dt);

@@ -66,6 +66,8 @@ export function reviveSampleGraph(data: SerializedSampleGraph): SampleGraph {
     edges: data.edges as WordEdge[],
     communities: (data.communities as Community[]).map((community) => ({
       ...community,
+      anchorVx: community.anchorVx ?? 0,
+      anchorVy: community.anchorVy ?? 0,
       centroidEmbedding: reviveFloat32(community.centroidEmbedding),
     })),
     occurrences: (data.occurrences as WordOccurrence[]).map((occurrence) => ({

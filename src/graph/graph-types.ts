@@ -81,6 +81,9 @@ export type Community = {
 
   anchorX: number;
   anchorY: number;
+  /** Damped community motion — prevents anchor teleports between ticks. */
+  anchorVx: number;
+  anchorVy: number;
 
   radius: number;
 

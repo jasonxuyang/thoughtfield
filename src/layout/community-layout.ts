@@ -7,11 +7,13 @@ import {
   embeddingDirection2d,
   memberSpatialCentroid,
 } from "./community-placement";
-import { LAYOUT_CONFIG } from "./layout-config";
+import { clampVelocity, LAYOUT_CONFIG } from "./layout-config";
 
 /** Soft tether toward member COM when members drift far from the anchor. */
-const MEMBER_TETHER = 0.06;
-const MEMBER_TETHER_MIN_DIST = 48;
+const MEMBER_TETHER = 0.03;
+const MEMBER_TETHER_MIN_DIST = 64;
+/** Cap per-tick force so overlap / repulsion never pops the field. */
+const MAX_COMMUNITY_FORCE = 18;
 
 export function stepCommunityLayout(
   communities: Community[],
@@ -69,7 +71,8 @@ export function stepCommunityLayout(
       forces[j]!.fy += ny * repulsion;
 
       if (dist < minDist) {
-        const push = (minDist - dist) * 1.25;
+        // Soft separation — former 1.25× push caused visible pops.
+        const push = (minDist - dist) * 0.35;
         forces[i]!.fx -= nx * push;
         forces[i]!.fy -= ny * push;
         forces[j]!.fx += nx * push;
@@ -80,8 +83,27 @@ export function stepCommunityLayout(
 
   for (let i = 0; i < communities.length; i += 1) {
     const community = communities[i]!;
-    community.anchorX += forces[i]!.fx * dt;
-    community.anchorY += forces[i]!.fy * dt;
+    const force = forces[i]!;
+    const forceMag = Math.hypot(force.fx, force.fy);
+    if (forceMag > MAX_COMMUNITY_FORCE) {
+      const scale = MAX_COMMUNITY_FORCE / forceMag;
+      force.fx *= scale;
+      force.fy *= scale;
+    }
+
+    community.anchorVx =
+      (community.anchorVx + force.fx * dt) * LAYOUT_CONFIG.damping;
+    community.anchorVy =
+      (community.anchorVy + force.fy * dt) * LAYOUT_CONFIG.damping;
+    const clamped = clampVelocity(
+      community.anchorVx,
+      community.anchorVy,
+      LAYOUT_CONFIG.communityMaxVelocity,
+    );
+    community.anchorVx = clamped.vx;
+    community.anchorVy = clamped.vy;
+    community.anchorX += community.anchorVx * dt;
+    community.anchorY += community.anchorVy * dt;
 
     const memberCom = memberSpatialCentroid(community.nodeIds, nodes, true);
     if (memberCom) {

@@ -5,6 +5,8 @@ import { clampVelocity } from "./layout-config";
 /** Skip far-pair repulsion — dominant cost was O(n²) hypot calls. */
 const REPULSION_CELL = 220;
 const REPULSION_RANGE = REPULSION_CELL * 1.6;
+/** Soft-cap summed forces so overlap spikes don't yank nodes. */
+const MAX_NODE_FORCE = 22;
 
 function edgeDistance(combinedWeight: number): number {
   return (
@@ -119,7 +121,7 @@ export function stepNodeLayout(
             (node.textWidth + other.textWidth) * 0.35 +
             LAYOUT_CONFIG.nodeRadius * 0.2;
           if (dist < minDist) {
-            const push = (minDist - dist) * 0.5;
+            const push = (minDist - dist) * 0.28;
             fa.fx -= nx * push;
             fa.fy -= ny * push;
             fb.fx += nx * push;
@@ -169,6 +171,12 @@ export function stepNodeLayout(
 
   for (const node of nodes) {
     const force = forces.get(node.id)!;
+    const forceMag = Math.hypot(force.fx, force.fy);
+    if (forceMag > MAX_NODE_FORCE) {
+      const scale = MAX_NODE_FORCE / forceMag;
+      force.fx *= scale;
+      force.fy *= scale;
+    }
     node.vx = (node.vx + force.fx * dt) * LAYOUT_CONFIG.damping;
     node.vy = (node.vy + force.fy * dt) * LAYOUT_CONFIG.damping;
     const clamped = clampVelocity(node.vx, node.vy);

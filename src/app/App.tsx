@@ -933,7 +933,16 @@ export function App() {
 
   const handleTypedPendingChange = useEffectEvent((text: string) => {
     prepareForTypedInput();
+    // Typing into the field should drop any inspection / camera focus.
+    if (selectedNodeIdRef.current !== null) {
+      selectNode(null);
+    }
     setTypedPending(text);
+  });
+
+  /** Mic / typing input — leave the graph unfocused for input. */
+  const clearNodeFocusForComposer = useEffectEvent(() => {
+    selectNode(null);
   });
 
   /** Commit finished typed/pasted words into the transcript + graph. */
@@ -1034,6 +1043,7 @@ export function App() {
             ready={modelsReady}
             mediaStream={mediaStream}
             onToggleListen={() => {
+              selectNode(null);
               if (listening) {
                 handleStop();
               } else {
@@ -1043,6 +1053,7 @@ export function App() {
             onPasteTranscript={handlePasteTranscript}
             onTypedPendingChange={handleTypedPendingChange}
             onCommitTypedWords={handleCommitTypedWords}
+            onComposerFocus={clearNodeFocusForComposer}
             samples={SAMPLE_CATALOG}
             onTrySample={handleTrySample}
             onActivateLabel={(label) => {
